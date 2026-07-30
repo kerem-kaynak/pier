@@ -228,3 +228,9 @@ hibernate/suspend park, k8s driver, `ls --all`, Windows.
 | GCE: same four on IAP + TERMINATED-with-disks              | spike/gcp.sh | parked with the GCP driver |
 
 Measured 2026-07-30 in eu-central-1; details in spike/README.md.
+
+Full v1 E2E (same day, same region, t4g.medium): stock create → ready 42s
+(harnesses finish async under cloud-init); idle self-park fired at
+idle_timeout+tick; resume → ready 23s; `pier bake` 8m19s once; **baked create
+→ attach-ready 52s** — inside the 60-90s TTFI target. keep/pin, ls state
+enrichment (beacon), rm, and teardown all verified; account swept clean after.
