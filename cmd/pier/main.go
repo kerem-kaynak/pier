@@ -1,39 +1,536 @@
-// pier — coding-agent sessions as parked-when-idle micro-VMs on your own cloud.
-//
-//	pier                    open the TUI (list / attach / new / delete)
-//	pier <branch> [base]    create a session from the current repo and attach
-//	pier ls                 list sessions (scriptable)
-//	pier attach <match>     reattach (starts a parked session)
-//	pier rm <match>         destroy session (instance + disk)
-//	pier keep <match>       pin: disable auto-park for this session
-//	pier setup              one-time wizard (per machine; per account if first)
-//	pier bake               build the prebaked session image (fast creates)
-//	pier doctor             environment + account checks
-//	pier teardown           remove the per-account groundwork
+// pier — coding agent sessions as park-when-idle micro-VMs on your own cloud.
 package main
 
 import (
+	"bufio"
+	"context"
+	"embed"
+	"encoding/json"
+	"flag"
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"sync"
+	"text/tabwriter"
+	"time"
+
+	"github.com/kerem-kaynak/pier/internal/config"
+	"github.com/kerem-kaynak/pier/internal/driver"
+	"github.com/kerem-kaynak/pier/internal/driver/awsec2"
+	"github.com/kerem-kaynak/pier/internal/tui"
+	"github.com/kerem-kaynak/pier/internal/wizard"
 )
+
+//go:embed assets
+var assets embed.FS
+
+func supervisorBin(arch string) ([]byte, error) {
+	b, err := assets.ReadFile("assets/pier-supervisor-linux-" + arch)
+	if err != nil {
+		return nil, fmt.Errorf("supervisor for %s not embedded — build with `make`, not `go build`", arch)
+	}
+	return b, nil
+}
+
+const usage = `pier — coding agent sessions as park-when-idle micro-VMs on your own cloud
+
+usage:
+  pier                      interactive session list
+  pier <branch> [base]      new session off base (default HEAD), attach
+      -d, --detach            create without attaching
+      --idle <dur|never>      idle self-park timeout (default from config)
+      --cap <dur|never>       unattended runaway cap
+      --no-park               shorthand for --idle never
+  pier ls                   list sessions
+  pier attach <session>     attach (auto-resumes if parked)
+  pier rm <session> [-f]    destroy session and its disk
+  pier keep <session>       pin: disable idle self-park
+  pier setup                first-run wizard (creates cloud groundwork)
+      --print-admin           print the admin-runnable setup commands instead
+  pier doctor               environment + account checks
+  pier bake                 prebake the session image (~60-90s creates)
+  pier teardown             remove all pier groundwork from the account
+`
 
 func main() {
 	args := os.Args[1:]
 	if len(args) == 0 {
-		fail("TUI not implemented yet — coming with the session store")
+		cmdTUI()
+		return
 	}
 	switch args[0] {
-	case "setup", "ls", "attach", "rm", "keep", "bake", "doctor", "teardown":
-		fail(fmt.Sprintf("%q not implemented yet", args[0]))
+	case "ls":
+		cmdLS()
+	case "attach":
+		cmdAttach(args[1:])
+	case "rm":
+		cmdRM(args[1:])
+	case "keep":
+		cmdKeep(args[1:])
+	case "setup":
+		cmdSetup(args[1:])
+	case "doctor":
+		cmdDoctor()
+	case "bake":
+		cmdBake()
+	case "teardown":
+		cmdTeardown()
 	case "help", "-h", "--help":
-		fmt.Println("usage: pier [<branch> [base] | ls | attach <m> | rm <m> | keep <m> | setup | bake | doctor | teardown]")
+		fmt.Print(usage)
 	default:
-		// Bare name = create a session for that branch from the cwd repo.
-		fail(fmt.Sprintf("create %q: not implemented yet", args[0]))
+		cmdNew(args)
 	}
 }
 
-func fail(msg string) {
-	fmt.Fprintln(os.Stderr, "pier: "+msg)
+func fatal(err error) {
+	fmt.Fprintln(os.Stderr, "pier:", err)
 	os.Exit(1)
+}
+
+func newDriver(cfg config.Config) (driver.Driver, error) {
+	switch cfg.Driver {
+	case "", "aws-ec2":
+		return &awsec2.Driver{
+			Profile:       cfg.AWS.Profile,
+			Region:        cfg.AWS.Region,
+			InstanceType:  cfg.AWS.InstanceType,
+			DiskGiB:       cfg.AWS.DiskGiB,
+			Subnet:        cfg.AWS.Subnet,
+			BakedAMI:      cfg.AWS.BakedAMI,
+			StateDir:      config.Dir(),
+			Manifest:      cfg.Secrets.Manifest,
+			SessionEnv:    sessionEnv(cfg),
+			SupervisorBin: supervisorBin,
+		}, nil
+	case "gcp-gce":
+		return nil, fmt.Errorf("the gcp-gce driver is parked for v1 — set driver = \"aws-ec2\"")
+	default:
+		return nil, fmt.Errorf("unknown driver %q", cfg.Driver)
+	}
+}
+
+// sessionEnv builds ~/.config/pier/env for new sessions: gh token from the
+// local gh login, Claude token from config (macOS keychain escape hatch).
+func sessionEnv(cfg config.Config) map[string]string {
+	env := map[string]string{}
+	if t := cfg.Secrets.ClaudeOAuthToken; t != "" {
+		env["CLAUDE_CODE_OAUTH_TOKEN"] = t
+	}
+	if out, err := exec.Command("gh", "auth", "token").Output(); err == nil {
+		if t := strings.TrimSpace(string(out)); t != "" {
+			env["GH_TOKEN"] = t
+		}
+	}
+	return env
+}
+
+func loadDriver() (config.Config, driver.Driver) {
+	cfg, err := config.Load()
+	if err != nil {
+		fatal(err)
+	}
+	drv, err := newDriver(cfg)
+	if err != nil {
+		fatal(err)
+	}
+	return cfg, drv
+}
+
+// --- new session ---------------------------------------------------------------
+
+func cmdNew(args []string) {
+	// Split positionals from flags so `pier my-branch -d` works (Go's flag
+	// package stops at the first positional).
+	takesValue := map[string]bool{"-idle": true, "--idle": true, "-cap": true, "--cap": true}
+	var pos, flagArgs []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if strings.HasPrefix(a, "-") {
+			flagArgs = append(flagArgs, a)
+			if takesValue[a] && i+1 < len(args) {
+				i++
+				flagArgs = append(flagArgs, args[i])
+			}
+		} else {
+			pos = append(pos, a)
+		}
+	}
+	fs := flag.NewFlagSet("new", flag.ExitOnError)
+	var detach, noPark bool
+	fs.BoolVar(&detach, "d", false, "")
+	fs.BoolVar(&detach, "detach", false, "")
+	fs.BoolVar(&noPark, "no-park", false, "")
+	idleS := fs.String("idle", "", "")
+	capS := fs.String("cap", "", "")
+	fs.Parse(flagArgs)
+	if len(pos) < 1 || len(pos) > 2 {
+		fmt.Print(usage)
+		os.Exit(1)
+	}
+	branch := pos[0]
+	base := "HEAD"
+	if len(pos) == 2 {
+		base = pos[1]
+	}
+
+	cfg, drv := loadDriver()
+	repo := repoRoot()
+	ctx := context.Background()
+
+	sessions, err := drv.List(ctx)
+	if err != nil {
+		fatal(err)
+	}
+	for _, s := range sessions {
+		if s.Name == branch {
+			fatal(fmt.Errorf("session %q already exists — `pier attach %s`", branch, branch))
+		}
+	}
+
+	idle, err := config.ParkDuration(or(*idleS, cfg.IdleTimeout))
+	if err != nil {
+		fatal(fmt.Errorf("--idle: %w", err))
+	}
+	if noPark {
+		idle = 0
+	}
+	cap_, err := config.ParkDuration(or(*capS, cfg.UnattendedCap))
+	if err != nil {
+		fatal(fmt.Errorf("--cap: %w", err))
+	}
+
+	fmt.Printf("creating %s  (%s @ %s)\n", branch, filepath.Base(repo), base)
+	sess, err := drv.Create(ctx, driver.CreateSpec{
+		Name: branch, Repo: repo, Branch: branch, BaseRef: base,
+		IdleTimeout: idle, UnattendedCap: cap_,
+		Progress: func(step string) { fmt.Println("  ▸", step) },
+	})
+	if err != nil {
+		fatal(err)
+	}
+	fmt.Printf("session %s ready\n", sess.Name)
+	if detach {
+		fmt.Printf("attach with: pier attach %s\n", sess.Name)
+		return
+	}
+	attach(drv, sess.ID)
+}
+
+func or(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
+}
+
+func repoRoot() string {
+	out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
+	if err != nil {
+		fatal(fmt.Errorf("not inside a git repository"))
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func attach(drv driver.Driver, id string) {
+	cmd, err := drv.AttachCommand(context.Background(), id)
+	if err != nil {
+		fatal(err)
+	}
+	fmt.Println("attaching — detach with C-b d (session keeps running)")
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintln(os.Stderr, "pier: attach:", err)
+	}
+}
+
+// --- ls / attach / rm / keep -----------------------------------------------------
+
+func cmdLS() {
+	_, drv := loadDriver()
+	sessions, err := drv.List(context.Background())
+	if err != nil {
+		fatal(err)
+	}
+	enrich(drv, sessions)
+	if len(sessions) == 0 {
+		fmt.Println("no sessions — start one with `pier <branch>`")
+		return
+	}
+	w := tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
+	fmt.Fprintln(w, "NAME\tREPO\tSTATE\tAGE\tCOST")
+	for _, s := range sessions {
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", s.Name, s.Repo, s.State, age(s.LastActive), s.CostNote)
+	}
+	w.Flush()
+}
+
+// enrich upgrades StateRunning to working/idle by reading each running
+// session's supervisor beacon in parallel.
+func enrich(drv driver.Driver, sessions []driver.Session) {
+	var wg sync.WaitGroup
+	for i := range sessions {
+		if sessions[i].State != driver.StateRunning {
+			continue
+		}
+		wg.Add(1)
+		go func(s *driver.Session) {
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			out, err := drv.Exec(ctx, s.ID, "cat /run/pier/status.json 2>/dev/null")
+			if err != nil {
+				return
+			}
+			var st struct {
+				State string    `json:"state"`
+				Since time.Time `json:"since"`
+			}
+			if json.Unmarshal([]byte(out), &st) != nil {
+				return
+			}
+			switch st.State {
+			case "working":
+				s.State = driver.StateWorking
+			case "idle":
+				s.State = driver.StateIdle
+			}
+			if !st.Since.IsZero() {
+				s.LastActive = st.Since
+			}
+		}(&sessions[i])
+	}
+	wg.Wait()
+}
+
+func age(t time.Time) string {
+	if t.IsZero() {
+		return "-"
+	}
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return "now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
+	}
+}
+
+func match(drv driver.Driver, query string) driver.Session {
+	sessions, err := drv.List(context.Background())
+	if err != nil {
+		fatal(err)
+	}
+	var hits []driver.Session
+	for _, s := range sessions {
+		if s.Name == query {
+			return s
+		}
+		if strings.Contains(s.Name, query) {
+			hits = append(hits, s)
+		}
+	}
+	switch len(hits) {
+	case 1:
+		return hits[0]
+	case 0:
+		fatal(fmt.Errorf("no session matching %q", query))
+	default:
+		var names []string
+		for _, h := range hits {
+			names = append(names, h.Name)
+		}
+		fatal(fmt.Errorf("%q is ambiguous: %s", query, strings.Join(names, ", ")))
+	}
+	panic("unreachable")
+}
+
+func cmdAttach(args []string) {
+	if len(args) != 1 {
+		fatal(fmt.Errorf("usage: pier attach <session>"))
+	}
+	_, drv := loadDriver()
+	s := match(drv, args[0])
+	resumeIfParked(drv, s)
+	attach(drv, s.ID)
+}
+
+func resumeIfParked(drv driver.Driver, s driver.Session) {
+	if s.State == driver.StateParked {
+		fmt.Printf("resuming %s (~20-30s)...\n", s.Name)
+		if err := drv.Resume(context.Background(), s.ID); err != nil {
+			fatal(err)
+		}
+	}
+}
+
+func cmdRM(args []string) {
+	force := false
+	var names []string
+	for _, a := range args {
+		if a == "-f" || a == "--force" {
+			force = true
+		} else {
+			names = append(names, a)
+		}
+	}
+	if len(names) != 1 {
+		fatal(fmt.Errorf("usage: pier rm <session> [-f]"))
+	}
+	_, drv := loadDriver()
+	s := match(drv, names[0])
+	if !force && !confirm(fmt.Sprintf("destroy session %q and its disk?", s.Name), false) {
+		return
+	}
+	if err := drv.Destroy(context.Background(), s.ID); err != nil {
+		fatal(err)
+	}
+	fmt.Printf("destroyed %s\n", s.Name)
+}
+
+func cmdKeep(args []string) {
+	if len(args) != 1 {
+		fatal(fmt.Errorf("usage: pier keep <session>"))
+	}
+	_, drv := loadDriver()
+	s := match(drv, args[0])
+	if err := pin(drv, s); err != nil {
+		fatal(err)
+	}
+	fmt.Printf("%s pinned — no idle self-park (unattended cap still applies)\n", s.Name)
+}
+
+// pin disables idle self-park; the supervisor re-reads its conf every tick,
+// so this applies live.
+func pin(drv driver.Driver, s driver.Session) error {
+	if s.State == driver.StateParked {
+		return fmt.Errorf("%s is parked — `pier attach %s` first", s.Name, s.Name)
+	}
+	_, err := drv.Exec(context.Background(), s.ID,
+		"sudo sed -i 's/^idle_timeout=.*/idle_timeout=never/' /etc/pier/supervisor.conf")
+	return err
+}
+
+// --- setup / doctor / bake / teardown ---------------------------------------------
+
+func cmdSetup(args []string) {
+	printAdmin := len(args) > 0 && args[0] == "--print-admin"
+	if err := wizard.Run(newDriver, printAdmin); err != nil {
+		fatal(err)
+	}
+}
+
+func cmdDoctor() {
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Println("! no config yet — checking with defaults (run `pier setup`)")
+		cfg = config.Default()
+	}
+	drv, err := newDriver(cfg)
+	if err != nil {
+		fatal(err)
+	}
+	if !printChecks(drv.Doctor(context.Background())) {
+		os.Exit(1)
+	}
+}
+
+func printChecks(checks []driver.Check) bool {
+	allOK := true
+	for _, c := range checks {
+		mark := "✓"
+		if !c.OK {
+			mark, allOK = "✗", false
+		}
+		if c.Detail != "" {
+			fmt.Printf("  %s %s — %s\n", mark, c.Name, c.Detail)
+		} else {
+			fmt.Printf("  %s %s\n", mark, c.Name)
+		}
+	}
+	return allOK
+}
+
+func cmdBake() {
+	cfg, drv := loadDriver()
+	fmt.Println("baking the session image: one temporary instance (~5 min), then an AMI (~$1-2/mo storage)")
+	ami, err := drv.Bake(context.Background())
+	if err != nil {
+		fatal(err)
+	}
+	cfg.AWS.BakedAMI = ami
+	if err := cfg.Save(); err != nil {
+		fatal(err)
+	}
+	fmt.Printf("baked %s — new sessions now cold-start in ~60-90s\n", ami)
+}
+
+func cmdTeardown() {
+	cfg, drv := loadDriver()
+	if !confirm("remove all pier groundwork (role, instance profile, security group, baked AMI) from the account?", false) {
+		return
+	}
+	if err := drv.Teardown(context.Background()); err != nil {
+		fatal(err)
+	}
+	if cfg.AWS.BakedAMI != "" {
+		cfg.AWS.BakedAMI = ""
+		cfg.Save()
+	}
+	fmt.Println("groundwork removed — the account is clean")
+}
+
+func confirm(prompt string, def bool) bool {
+	hint := "y/N"
+	if def {
+		hint = "Y/n"
+	}
+	fmt.Printf("%s [%s] ", prompt, hint)
+	line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+	line = strings.ToLower(strings.TrimSpace(line))
+	if line == "" {
+		return def
+	}
+	return line == "y" || line == "yes"
+}
+
+// --- TUI --------------------------------------------------------------------------
+
+func cmdTUI() {
+	_, drv := loadDriver()
+	quota := ""
+	if q, err := drv.Headroom(context.Background()); err == nil {
+		quota = q.Detail
+	}
+	action, err := tui.Run(tui.Options{
+		Quota: quota,
+		Fetch: func() ([]driver.Session, error) {
+			sessions, err := drv.List(context.Background())
+			if err != nil {
+				return nil, err
+			}
+			enrich(drv, sessions)
+			return sessions, nil
+		},
+		Destroy: func(s driver.Session) error {
+			return drv.Destroy(context.Background(), s.ID)
+		},
+		Pin: func(s driver.Session) error {
+			return pin(drv, s)
+		},
+	})
+	if err != nil {
+		fatal(err)
+	}
+	switch action.Kind {
+	case tui.ActionAttach:
+		resumeIfParked(drv, action.Session)
+		attach(drv, action.Session.ID)
+	case tui.ActionNew:
+		cmdNew([]string{action.Branch})
+	}
 }

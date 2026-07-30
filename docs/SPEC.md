@@ -66,9 +66,12 @@ in provider APIs + tags/labels — **no server, no database, no laptop daemon**.
   without a default VPC set `subnet` in config.
 - Instance profile `pier-session`: `AmazonSSMManagedInstanceCore` only.
 - `InstanceInitiatedShutdownBehavior=stop` → in-VM `shutdown -h now` parks.
-- Tags: `pier:managed`, `pier:user` (STS ARN), `pier:session`, `pier:repo`.
+- Tags: `pier:managed`, `pier:user` (STS ARN), `pier:session`, `pier:repo`,
+  `pier:branch`.
+- No AWS SDK: the driver shells out to `aws --output json` (the CLI is already
+  required for the SSM plugin, and SSO/profiles/MFA come for free).
 
-### gcp-gce
+### gcp-gce (parked — implemented after AWS is fully E2E-tested)
 - e2-medium default (~$0.033/h), Ubuntu 24.04, pd-balanced 40GB.
 - Default network + public IP; single firewall rule `pier-allow-iap-ssh`
   (35.235.240.0/20 → :22, target tag `pier-session`).
@@ -76,15 +79,18 @@ in provider APIs + tags/labels — **no server, no database, no laptop daemon**.
 - `shutdown -h now` lands in TERMINATED with disks intact (= parked).
 - Labels mirror the AWS tags (`pier-managed`, `pier-user`, ...).
 
-## 4. Attach
+## 4. Attach (and every other byte to the VM)
 
-- AWS: `aws ssm start-session` (interactive-command document →
-  `sudo -iu agent tmux attach`) shelling out to `session-manager-plugin`.
-- GCP: `gcloud compute ssh <name> --tunnel-through-iap -- -t '... tmux attach'`.
+One mechanism: **OpenSSH over the SSM tunnel** — `ProxyCommand aws ssm
+start-session --document-name AWS-StartSSHSession`. Attach is `ssh -t agent@<id>
+tmux new -A -s main`; exec is one-shot ssh; file push is scp. Each session
+gets its own ed25519 keypair, generated at create, pubkey injected via
+cloud-init, private key under `~/.config/pier/keys/`. (GCP equivalent later:
+`gcloud compute ssh --tunnel-through-iap`.)
 
-Zero inbound networking on both clouds; every attach is IAM-authenticated and
-audited (CloudTrail / IAP logs). Inside the VM, work happens as user `agent`
-in a tmux session under `/home/agent/work/<repo>`.
+Zero inbound networking; every connection is IAM-authenticated and audited
+(CloudTrail). Inside the VM, work happens as user `agent` in a tmux session
+under `/home/agent/work/<repo>`.
 
 ## 5. Identity & teams
 
@@ -120,13 +126,14 @@ numbers live in spike/README.md).
 1. **`pier bake`** — prebaked per-driver image: agent user, tmux, git, gh,
    docker, mise, claude + codex, supervisor preinstalled. ~$1/mo snapshot
    storage. Offered as the wizard's last step; `pier bake` refreshes it.
-2. **Async create pipeline** — launch the instance first; prepare the git
-   bundle + secrets while it boots; attach the moment SSM/IAP answers; push
-   code and run `.pier-setup.sh` in a background tmux pane with progress
-   visible in the session. You're typing to the agent while deps install.
-3. **`warm_pool = N`** (optional) — N blank parked VMs; create becomes
-   resume+claim (~35–45s). Off by default until the spike proves it earns
-   its keep.
+2. **Overlapped create** — launch the instance first; build the git bundle +
+   secrets tar while it boots; push and bootstrap the moment sshd answers;
+   `.pier-setup.sh` runs asynchronously in a background tmux window while you
+   type to the agent. (On a stock AMI the bootstrap must wait for cloud-init's
+   harness install — minutes, exactly once; bake removes it.)
+
+Cut for v1 (numbers didn't justify the moving parts): warm pools, mid-create
+quota polling.
 
 ## 8. Secrets
 
@@ -142,7 +149,8 @@ written back. Sources (wizard-detected, confirmed into the manifest):
 
 ## 9. Setup wizard
 
-`pier setup` — four phases, under 3 minutes:
+`pier setup` — plain stdin prompts (no TUI form), four phases, under 3
+minutes. v1 is AWS-only:
 
 1. **Detect** — CLIs, profiles/projects, plugin, gh, harness configs; all
    found values become defaults.
@@ -172,7 +180,7 @@ shows headroom (e.g. `12/32 vCPU`).
 ```
 pier                    TUI: list / attach / new / delete / pin
 pier <branch> [base]    create from cwd repo (branch off base, default HEAD) and attach
-pier ls                 list own sessions (--all: whole account)
+pier ls                 list own sessions
 pier attach <match>     reattach; resumes if parked
 pier rm <match>         destroy (instance + disk)
 pier keep <match>       disable auto-park for a session
@@ -185,10 +193,9 @@ pier teardown           remove account groundwork
 ## 12. Config (`~/.config/pier/config.toml`)
 
 ```toml
-default_driver = "aws-ec2"
+driver         = "aws-ec2"
 idle_timeout   = "30m"        # or "never"
 unattended_cap = "8h"
-warm_pool      = 0
 
 [aws]
 profile       = "default"
@@ -198,22 +205,17 @@ disk_gib      = 40
 # subnet      = "subnet-..."  # only for orgs without a default VPC
 # baked_ami   = "ami-..."     # written by `pier bake`
 
-[gcp]
-project      = "my-project"
-zone         = "europe-west3-a"
-machine_type = "e2-medium"
-disk_gib     = 40
-
 [secrets]
-manifest = ["~/.codex/", "~/.claude/settings.json", "~/.claude/CLAUDE.md"]
+manifest = [".codex/auth.json", ".codex/config.toml", ".claude/settings.json", ".claude/CLAUDE.md"]
+# claude_oauth_token = "..."  # from `claude setup-token` (macOS Keychain path)
 ```
 
 ## 13. v1 cut line
 
-In: both drivers, TUI, wizard (+print-admin, teardown), bake, async create
-pipeline, supervisor parking (+keep/pin), one-way secrets copy, doctor, quota
-UX. Out (v1.1+): hibernate/suspend park, k8s driver, warm-pool auto-tuning,
-`ls --all` write ops, Windows.
+In: AWS driver, TUI, wizard (+print-admin, teardown), bake, overlapped create,
+supervisor parking (+keep/pin), one-way secrets copy, doctor, quota UX.
+Out (v1.1+): GCP driver (parked until AWS is fully E2E-tested), warm pools,
+hibernate/suspend park, k8s driver, `ls --all`, Windows.
 
 ## 14. Load-bearing bets → spikes
 
@@ -222,7 +224,7 @@ UX. Out (v1.1+): hibernate/suspend park, k8s driver, warm-pool auto-tuning,
 | `shutdown -h now` parks (EC2 → stopped, not terminated)    | spike/aws.sh | **PASS** — stopped in 44s |
 | boot → SSM-ready time supports 60–90s TTFI                 | spike/aws.sh | **PASS** — 29s stock AMI |
 | stop → start → ready ≈ 30s resume                          | spike/aws.sh | **PASS** — 21s |
-| SSM interactive TTY feels like ssh (manual, `--keep` mode) | spike/aws.sh | pending (manual) |
-| GCE: same four on IAP + TERMINATED-with-disks              | spike/gcp.sh | pending (script untested) |
+| SSM interactive TTY feels like ssh (manual, `--keep` mode) | spike/aws.sh | superseded — v1 uses real ssh over the SSM tunnel |
+| GCE: same four on IAP + TERMINATED-with-disks              | spike/gcp.sh | parked with the GCP driver |
 
 Measured 2026-07-30 in eu-central-1; details in spike/README.md.
