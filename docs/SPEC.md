@@ -219,8 +219,10 @@ UX. Out (v1.1+): hibernate/suspend park, k8s driver, warm-pool auto-tuning,
 
 | bet                                                        | spike       | status   |
 |------------------------------------------------------------|-------------|----------|
-| `shutdown -h now` parks (EC2 → stopped, not terminated)    | spike/aws.sh | pending |
-| boot → SSM-ready time supports 60–90s TTFI                 | spike/aws.sh | pending |
-| stop → start → ready ≈ 30s resume                          | spike/aws.sh | pending |
-| SSM interactive TTY feels like ssh (manual, `--keep` mode) | spike/aws.sh | pending |
+| `shutdown -h now` parks (EC2 → stopped, not terminated)    | spike/aws.sh | **PASS** — stopped in 44s |
+| boot → SSM-ready time supports 60–90s TTFI                 | spike/aws.sh | **PASS** — 29s stock AMI |
+| stop → start → ready ≈ 30s resume                          | spike/aws.sh | **PASS** — 21s |
+| SSM interactive TTY feels like ssh (manual, `--keep` mode) | spike/aws.sh | pending (manual) |
 | GCE: same four on IAP + TERMINATED-with-disks              | spike/gcp.sh | pending (script untested) |
+
+Measured 2026-07-30 in eu-central-1; details in spike/README.md.
