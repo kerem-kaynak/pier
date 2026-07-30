@@ -54,6 +54,7 @@ func (d *Driver) sshOpts(id string) []string {
 		"-o", "StrictHostKeyChecking=accept-new",
 		"-o", "UserKnownHostsFile=" + filepath.Join(d.StateDir, "known_hosts"),
 		"-o", "IdentitiesOnly=yes",
+		"-o", "BatchMode=yes",
 		"-o", "LogLevel=ERROR",
 		"-o", "ConnectTimeout=10",
 	}

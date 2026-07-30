@@ -300,6 +300,7 @@ After=multi-user.target
 
 [Service]
 User=agent
+RuntimeDirectory=pier
 ExecStart=/usr/local/bin/pier-supervisor
 Restart=always
 
