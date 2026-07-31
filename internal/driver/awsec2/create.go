@@ -81,6 +81,11 @@ func (d *Driver) Create(ctx context.Context, spec driver.CreateSpec) (*driver.Se
 		return nil, fmt.Errorf("base ref %q not found", baseRef(spec))
 	}
 	mode, origin := originInfo(spec.Repo, sha)
+	why := "no github origin has the base"
+	if mode != "full" && !originReachable(ctx, origin, d.SessionEnv["GH_TOKEN"]) {
+		progress("github origin not reachable with the auth sessions get — using the full bundle")
+		mode, why = "full", "github not reachable with session auth"
+	}
 	bundle := ""
 	if mode != "origin" {
 		bundle = filepath.Join(work, "pier.bundle")
@@ -121,7 +126,7 @@ func (d *Driver) Create(ctx context.Context, spec driver.CreateSpec) (*driver.Se
 		progress(fmt.Sprintf("pushing local-only commits (%s) — the rest comes from github", fileMB(bundle)))
 		pushes = append(pushes, struct{ local, remote string }{bundle, "/tmp/pier.bundle"})
 	default:
-		progress(fmt.Sprintf("pushing workspace (%s — full history; no github origin has the base)", fileMB(bundle)))
+		progress(fmt.Sprintf("pushing workspace (%s — full history; %s)", fileMB(bundle), why))
 		pushes = append(pushes, struct{ local, remote string }{bundle, "/tmp/pier.bundle"})
 	}
 	for _, p := range pushes { // biggest last: its scp meter is the wait
@@ -423,6 +428,24 @@ func originInfo(repo, sha string) (mode, url string) {
 	return "thin", fetchable
 }
 
+// originReachable proves, before skipping the bundle, that the exact fetch
+// the VM will run works: same https URL, same auth (GH_TOKEN or anonymous).
+// Local credential helpers are disabled so a keychain PAT can't vouch for a
+// VM that won't have it. Sessions have open egress, so laptop-success is a
+// safe proxy; on failure the bundle path takes over — slower, never wrong.
+// Covers: private repo without gh logged in, revoked/SSO-gated tokens, etc.
+func originReachable(ctx context.Context, url, token string) bool {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	args := []string{"-c", "credential.helper="} // reset the helper list
+	if token != "" {
+		args = append(args, "-c", `credential.helper=!f() { echo username=x-access-token; echo "password=$GH_TOKEN"; }; f`)
+	}
+	cmd := exec.CommandContext(ctx, "git", append(args, "ls-remote", "--heads", url)...)
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_ASKPASS=", "GH_TOKEN="+token)
+	return cmd.Run() == nil
+}
+
 var sshGithub = regexp.MustCompile(`^(?:ssh://)?git@github\.com[:/](.+?)(?:\.git)?$`)
 
 // fetchURL normalizes a GitHub origin to https (empty for non-GitHub hosts).
@@ -469,13 +492,14 @@ func fileMB(path string) string {
 }
 
 // claudeSeed builds a minimal ~/.claude.json for the VM: theme +
-// onboarding-done (skips the theme picker), the user-scope MCP servers that
-// can actually run on Linux (their auth lives in the config's env blocks and
-// travels with it), and pre-trust for the session workdir — the trust dialog
-// would only re-ask what creating the session already answered. The rest of
-// the local state file (history, per-path project state) is laptop-specific
-// noise and deliberately stays home.
-func claudeSeed(home, workdir string) []byte {
+// onboarding-done (skips the theme picker), the MCP servers that can actually
+// run on Linux — user-scope ones plus the source repo's project-scoped ones,
+// which follow the repo onto the VM workdir (their auth lives in env blocks /
+// headers and travels; OAuth'd remotes re-auth in-session) — and pre-trust
+// for the workdir: the trust dialog would only re-ask what creating the
+// session already answered. The rest of the local state file (history,
+// per-path project state) is laptop-specific noise and deliberately stays home.
+func claudeSeed(home, srcRepo, workdir string) []byte {
 	b, err := os.ReadFile(filepath.Join(home, ".claude.json"))
 	if err != nil {
 		return nil
@@ -484,16 +508,23 @@ func claudeSeed(home, workdir string) []byte {
 		Theme                  string                     `json:"theme"`
 		HasCompletedOnboarding bool                       `json:"hasCompletedOnboarding"`
 		McpServers             map[string]json.RawMessage `json:"mcpServers"`
+		Projects               map[string]struct {
+			McpServers map[string]json.RawMessage `json:"mcpServers"`
+		} `json:"projects"`
 	}
 	if json.Unmarshal(b, &local) != nil || !local.HasCompletedOnboarding {
 		return nil
 	}
+	proj := map[string]any{
+		"hasTrustDialogAccepted":        true,
+		"hasCompletedProjectOnboarding": true,
+	}
+	if mcp := portableMCP(local.Projects[srcRepo].McpServers); len(mcp) > 0 {
+		proj["mcpServers"] = mcp
+	}
 	seed := map[string]any{
 		"hasCompletedOnboarding": true,
-		"projects": map[string]any{workdir: map[string]bool{
-			"hasTrustDialogAccepted":        true,
-			"hasCompletedProjectOnboarding": true,
-		}},
+		"projects":               map[string]any{workdir: proj},
 	}
 	if local.Theme != "" {
 		seed["theme"] = local.Theme
@@ -582,7 +613,7 @@ func buildFilesTar(dst string, manifest []string, repoRoot string, env map[strin
 		}
 	}
 
-	if seed := claudeSeed(home, Workspace+"/"+filepath.Base(repoRoot)); seed != nil {
+	if seed := claudeSeed(home, repoRoot, Workspace+"/"+filepath.Base(repoRoot)); seed != nil {
 		if err := tw.WriteHeader(&tar.Header{Name: "home/.claude.json", Mode: 0o600, Size: int64(len(seed))}); err != nil {
 			return err
 		}

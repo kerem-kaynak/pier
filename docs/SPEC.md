@@ -145,9 +145,12 @@ numbers live in spike/README.md).
    GitHub origin ref, the VM fetches straight from GitHub (~100× faster;
    auth via the GH_TOKEN credential helper — ssh origins are rewritten to
    https, which also makes push work in sessions). Local-only commits on top
-   of pushed history travel as a thin delta bundle (KBs). The full-history
-   bundle over SSM remains the universal fallback: no origin, non-GitHub
-   host, never-pushed history.
+   of pushed history travel as a thin delta bundle (KBs). Before skipping the
+   bundle, a preflight `ls-remote` proves the fetch works with exactly the
+   auth a session gets (GH_TOKEN or anonymous; local credential helpers
+   disabled) — private repos without a usable token degrade automatically.
+   The full-history bundle over SSM remains the universal fallback: no
+   origin, non-GitHub host, never-pushed history, failed preflight.
 
 Cut for v1 (numbers didn't justify the moving parts): warm pools, mid-create
 quota polling.
@@ -166,13 +169,15 @@ written back. Sources (wizard-detected, confirmed into the manifest):
   (Foundry/API-key setups need no token: their auth rides in
   `~/.claude/settings.json` with the manifest — the wizard detects this.)
 - a minimal `~/.claude.json` seed: onboarding-done + theme (skips the theme
-  picker), user-scope MCP servers that can run on Linux (auth rides in their
-  env blocks; macOS-binary servers are dropped), and pre-trust for the
-  session workdir so the folder-trust dialog never fires. Codex gets the
-  workdir pre-trusted via a `[projects]` append to its copied config.toml.
-  History and laptop-path project state stay home. MCP servers whose auth
-  lives in the macOS Keychain (OAuth-based remotes) need a one-time re-auth
-  in the session.
+  picker), the MCP servers that can run on Linux — user-scope ones plus the
+  source repo's project-scoped ones, which follow the repo onto the VM
+  workdir (auth rides in their env blocks; macOS-binary servers are
+  dropped) — and pre-trust for the session workdir so the folder-trust
+  dialog never fires. Codex gets the workdir pre-trusted via a `[projects]`
+  append to its copied config.toml. History and laptop-path project state
+  stay home. MCP servers whose auth lives in the macOS Keychain (OAuth-based
+  remotes like Linear/Notion) carry their declaration but need a one-time
+  `/mcp` re-auth in the session.
 
 ## 9. Setup wizard
 

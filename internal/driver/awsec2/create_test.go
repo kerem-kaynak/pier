@@ -34,8 +34,8 @@ func TestDurConf(t *testing.T) {
 
 func TestClaudeSeed(t *testing.T) {
 	home := t.TempDir()
-	wd := "/home/agent/work/myrepo"
-	if got := claudeSeed(home, wd); got != nil {
+	src, wd := "/Users/x/repo", "/home/agent/work/myrepo"
+	if got := claudeSeed(home, src, wd); got != nil {
 		t.Errorf("no local .claude.json should seed nothing, got %s", got)
 	}
 	write := func(s string) {
@@ -44,22 +44,28 @@ func TestClaudeSeed(t *testing.T) {
 		}
 	}
 	write(`{"hasCompletedOnboarding":false,"theme":"dark"}`)
-	if got := claudeSeed(home, wd); got != nil {
+	if got := claudeSeed(home, src, wd); got != nil {
 		t.Errorf("incomplete onboarding should seed nothing, got %s", got)
 	}
 	write(`{"hasCompletedOnboarding":true,"theme":"dark",
-		"projects":{"/Users/x":{"lastCost":1}},"oauthAccount":{"x":1},
+		"projects":{
+			"/Users/x/repo":{"lastCost":1,"mcpServers":{
+				"linear":{"type":"http","url":"https://mcp.linear.app/mcp"},
+				"mactool":{"type":"stdio","command":"/opt/homebrew/bin/x"}}},
+			"/Users/x/elsewhere":{"mcpServers":{"stray":{"type":"http","url":"https://s"}}}},
+		"oauthAccount":{"x":1},
 		"mcpServers":{
 			"portable":{"type":"stdio","command":"npx","args":["-y","x"],"env":{"API_KEY":"k"}},
 			"macapp":{"type":"stdio","command":"/Applications/X.app/Contents/MacOS/x"}}}`)
-	got := string(claudeSeed(home, wd))
+	got := string(claudeSeed(home, src, wd))
 	for _, want := range []string{`"hasCompletedOnboarding":true`, `"theme":"dark"`,
-		`"portable"`, `"API_KEY":"k"`, wd, `"hasTrustDialogAccepted":true`} {
+		`"portable"`, `"API_KEY":"k"`, wd, `"hasTrustDialogAccepted":true`,
+		`"linear"`, `"https://mcp.linear.app/mcp"`} { // project-scoped MCPs follow the repo
 		if !strings.Contains(got, want) {
 			t.Errorf("seed missing %s: %s", want, got)
 		}
 	}
-	for _, bad := range []string{"macapp", "oauthAccount", "/Users/x"} {
+	for _, bad := range []string{"macapp", "mactool", "stray", "oauthAccount", "/Users/x"} {
 		if strings.Contains(got, bad) {
 			t.Errorf("seed must not carry %s: %s", bad, got)
 		}
