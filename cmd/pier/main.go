@@ -270,15 +270,51 @@ func repoRoot() string {
 	return strings.TrimSpace(string(out))
 }
 
+// attach runs the interactive ssh+tmux. A fresh or just-resumed VM reports
+// EC2-running before its SSM agent has registered (~30s window), so an ssh
+// attempt that dies instantly gets one bounded wait-for-reachability and a
+// retry instead of a raw TargetNotConnected dump.
 func attach(drv driver.Driver, id string) {
-	cmd, err := drv.AttachCommand(context.Background(), id)
-	if err != nil {
-		fatal(err)
-	}
 	fmt.Println(ui.Dim.Render("attaching — detach with C-b d (session keeps running)"))
-	if err := cmd.Run(); err != nil {
-		fmt.Fprintln(os.Stderr, "pier: attach:", err)
+	retried := false
+	for {
+		cmd, err := drv.AttachCommand(context.Background(), id)
+		if err != nil {
+			fatal(err)
+		}
+		start := time.Now()
+		runErr := cmd.Run()
+		if runErr == nil {
+			return
+		}
+		// A session that was interactive and then dropped fails slow; only an
+		// instant failure reads as "not online yet" — and only once: if it
+		// still fails after reachability was confirmed, waiting won't fix it.
+		if retried || time.Since(start) > 15*time.Second {
+			fmt.Fprintln(os.Stderr, "pier: attach:", runErr)
+			return
+		}
+		retried = true
+		fmt.Println(ui.Dim.Render("not reachable yet — waiting for the session to come online (fresh VMs take ~30s)"))
+		if err := waitReachable(drv, id, 4*time.Minute); err != nil {
+			fatal(err)
+		}
 	}
+}
+
+// waitReachable polls a no-op exec until ssh-over-SSM answers.
+func waitReachable(drv driver.Driver, id string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		_, err := drv.Exec(ctx, id, "true")
+		cancel()
+		if err == nil {
+			return nil
+		}
+		time.Sleep(3 * time.Second)
+	}
+	return fmt.Errorf("session not reachable after %s — `pier ls` to check on it", timeout)
 }
 
 // --- ls / attach / rm / keep -----------------------------------------------------
