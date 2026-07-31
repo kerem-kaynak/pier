@@ -17,6 +17,7 @@ import (
 
 	"github.com/kerem-kaynak/pier/internal/config"
 	"github.com/kerem-kaynak/pier/internal/driver"
+	"github.com/kerem-kaynak/pier/internal/ui"
 )
 
 // adminDoc is for devs without IAM rights: the exact groundwork their admin
@@ -49,7 +50,9 @@ func Run(newDriver func(config.Config) (driver.Driver, error), printAdminOnly bo
 	ctx := context.Background()
 
 	// 1. detect
-	fmt.Println("pier setup — sessions run on your own AWS account; nothing leaves it.")
+	fmt.Println("\n " + ui.Title.Render("⚓ pier setup") +
+		ui.Dim.Render("  sessions run on your own AWS account; nothing leaves it"))
+	fmt.Println()
 	for bin, hint := range map[string]string{
 		"aws":                    "brew install awscli",
 		"session-manager-plugin": "brew install --cask session-manager-plugin",
@@ -69,7 +72,7 @@ func Run(newDriver func(config.Config) (driver.Driver, error), printAdminOnly bo
 	// 2. ask
 	if profiles, err := exec.Command("aws", "configure", "list-profiles").Output(); err == nil {
 		if p := strings.Fields(string(profiles)); len(p) > 0 {
-			fmt.Println("  aws profiles:", strings.Join(p, ", "))
+			fmt.Println(ui.Dim.Render("  aws profiles: " + strings.Join(p, ", ")))
 		}
 	}
 	cfg.AWS.Profile = ask(in, "AWS profile", or(cfg.AWS.Profile, "default"))
@@ -77,7 +80,7 @@ func Run(newDriver func(config.Config) (driver.Driver, error), printAdminOnly bo
 	if err != nil {
 		return err
 	}
-	fmt.Println("  ✓ authenticated as", arn)
+	fmt.Println("  "+ui.Mark(true), "authenticated as", ui.Bold.Render(arn))
 	if cfg.AWS.Region == "" {
 		out, _ := exec.Command("aws", "configure", "get", "region", "--profile", cfg.AWS.Profile).Output()
 		cfg.AWS.Region = strings.TrimSpace(string(out))
@@ -92,7 +95,7 @@ func Run(newDriver func(config.Config) (driver.Driver, error), printAdminOnly bo
 	if len(cfg.Secrets.Manifest) > 0 {
 		fmt.Println("  found agent config to copy into sessions:")
 		for _, m := range cfg.Secrets.Manifest {
-			fmt.Println("    ~/" + m)
+			fmt.Println(ui.Dim.Render("    ~/" + m))
 		}
 		if !yes(in, "copy these into every session?", true) {
 			cfg.Secrets.Manifest = nil
@@ -101,10 +104,11 @@ func Run(newDriver func(config.Config) (driver.Driver, error), printAdminOnly bo
 
 	if cfg.Secrets.ClaudeOAuthToken == "" {
 		if p := claudeSelfContained(); p != "" && slices.Contains(cfg.Secrets.Manifest, ".claude/settings.json") {
-			fmt.Printf("  ✓ claude auth: %s in ~/.claude/settings.json — travels with the manifest, no token needed\n", p)
+			fmt.Printf("  %s claude auth: %s in ~/.claude/settings.json %s\n",
+				ui.Mark(true), p, ui.Dim.Render("— travels with the manifest, no token needed"))
 		} else {
-			fmt.Println("  Claude subscription auth lives in the macOS Keychain and can't be copied.")
-			fmt.Println("  Run `claude setup-token` in another terminal to mint a session token.")
+			fmt.Println(ui.Dim.Render("  Claude subscription auth lives in the macOS Keychain and can't be copied."))
+			fmt.Println(ui.Dim.Render("  Run `claude setup-token` in another terminal to mint a session token."))
 			if tok := ask(in, "paste token (enter to skip)", ""); tok != "" {
 				cfg.Secrets.ClaudeOAuthToken = tok
 			}
@@ -116,7 +120,8 @@ func Run(newDriver func(config.Config) (driver.Driver, error), printAdminOnly bo
 	if err != nil {
 		return err
 	}
-	fmt.Println("\ncreating groundwork (IAM role + instance profile + egress-only security group)...")
+	fmt.Println("\n " + ui.Accent.Render("creating groundwork") +
+		ui.Dim.Render("  IAM role + instance profile + egress-only security group"))
 	rep, err := drv.SetupOnce(ctx)
 	if err != nil {
 		// Only blame IAM rights when it actually is a permissions error.
@@ -126,29 +131,25 @@ func Run(newDriver func(config.Config) (driver.Driver, error), printAdminOnly bo
 		return err
 	}
 	for _, c := range rep.Created {
-		fmt.Println("  + created", c)
+		fmt.Println("  " + ui.OK.Render("+") + " created " + c)
 	}
 	for _, e := range rep.Existed {
-		fmt.Println("  = found", e)
+		fmt.Println(ui.Dim.Render("  = found " + e))
 	}
 
 	if err := cfg.Save(); err != nil {
 		return err
 	}
-	fmt.Println("  wrote", config.Path())
+	fmt.Println(ui.Dim.Render("  wrote " + config.Path()))
 
 	// 4. doctor
-	fmt.Println("\nchecks:")
+	fmt.Println("\n " + ui.Accent.Render("checks"))
 	for _, c := range drv.Doctor(ctx) {
-		mark := "✓"
-		if !c.OK {
-			mark = "✗"
-		}
+		line := "  " + ui.Mark(c.OK) + " " + c.Name
 		if c.Detail != "" {
-			fmt.Printf("  %s %s — %s\n", mark, c.Name, c.Detail)
-		} else {
-			fmt.Printf("  %s %s\n", mark, c.Name)
+			line += ui.Dim.Render(" — " + c.Detail)
 		}
+		fmt.Println(line)
 	}
 
 	// 5. offer bake
@@ -162,12 +163,13 @@ func Run(newDriver func(config.Config) (driver.Driver, error), printAdminOnly bo
 		if err := cfg.Save(); err != nil {
 			return err
 		}
-		fmt.Println("  baked", ami)
+		fmt.Println("  "+ui.Mark(true), "baked", ami)
 	} else {
-		fmt.Println("  (you can run `pier bake` anytime)")
+		fmt.Println(ui.Dim.Render("  (you can run `pier bake` anytime)"))
 	}
 
-	fmt.Println("\ndone — try: cd <some-repo> && pier my-branch")
+	fmt.Println("\n " + ui.OK.Render("done") + " — try: " +
+		ui.Accent.Render("cd <some-repo> && pier my-branch"))
 	return nil
 }
 
@@ -189,7 +191,7 @@ func checkIdentity(in *bufio.Reader, profile string) (string, error) {
 		return arn, nil
 	}
 	if low := strings.ToLower(err.Error()); strings.Contains(low, "sso") && (strings.Contains(low, "expired") || strings.Contains(low, "refresh")) {
-		fmt.Printf("  ✗ the SSO session for profile %q has expired\n", profile)
+		fmt.Printf("  %s the SSO session for profile %q has expired\n", ui.Mark(false), profile)
 		if yes(in, "run `aws sso login --profile "+profile+"` now?", true) {
 			login := exec.Command("aws", "sso", "login", "--profile", profile)
 			login.Stdin, login.Stdout, login.Stderr = os.Stdin, os.Stdout, os.Stderr
@@ -254,7 +256,7 @@ func detectManifest() []string {
 
 func ask(in *bufio.Reader, prompt, def string) string {
 	if def != "" {
-		fmt.Printf("  %s [%s]: ", prompt, def)
+		fmt.Printf("  %s %s: ", prompt, ui.Dim.Render("["+def+"]"))
 	} else {
 		fmt.Printf("  %s: ", prompt)
 	}

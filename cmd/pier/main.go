@@ -20,6 +20,7 @@ import (
 	"github.com/kerem-kaynak/pier/internal/driver"
 	"github.com/kerem-kaynak/pier/internal/driver/awsec2"
 	"github.com/kerem-kaynak/pier/internal/tui"
+	"github.com/kerem-kaynak/pier/internal/ui"
 	"github.com/kerem-kaynak/pier/internal/wizard"
 )
 
@@ -88,7 +89,7 @@ func main() {
 }
 
 func fatal(err error) {
-	fmt.Fprintln(os.Stderr, "pier:", err)
+	fmt.Fprintln(os.Stderr, ui.Bad.Render("pier:"), err)
 	os.Exit(1)
 }
 
@@ -204,18 +205,19 @@ func cmdNew(args []string) {
 		fatal(fmt.Errorf("--cap: %w", err))
 	}
 
-	fmt.Printf("creating %s  (%s @ %s)\n", branch, filepath.Base(repo), base)
+	fmt.Printf("%s %s\n", ui.Bold.Render("creating "+branch),
+		ui.Dim.Render(fmt.Sprintf("(%s @ %s)", filepath.Base(repo), base)))
 	sess, err := drv.Create(ctx, driver.CreateSpec{
 		Name: branch, Repo: repo, Branch: branch, BaseRef: base,
 		IdleTimeout: idle, UnattendedCap: cap_,
-		Progress: func(step string) { fmt.Println("  ▸", step) },
+		Progress: func(step string) { fmt.Println(ui.Accent.Render("  ▸"), step) },
 	})
 	if err != nil {
 		fatal(err)
 	}
-	fmt.Printf("session %s ready\n", sess.Name)
+	fmt.Println(ui.OK.Render("session " + sess.Name + " ready"))
 	if detach {
-		fmt.Printf("attach with: pier attach %s\n", sess.Name)
+		fmt.Println(ui.Dim.Render("attach with: pier attach " + sess.Name))
 		return
 	}
 	attach(drv, sess.ID)
@@ -241,7 +243,7 @@ func attach(drv driver.Driver, id string) {
 	if err != nil {
 		fatal(err)
 	}
-	fmt.Println("attaching — detach with C-b d (session keeps running)")
+	fmt.Println(ui.Dim.Render("attaching — detach with C-b d (session keeps running)"))
 	if err := cmd.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "pier: attach:", err)
 	}
@@ -478,15 +480,12 @@ func cmdDoctor() {
 func printChecks(checks []driver.Check) bool {
 	allOK := true
 	for _, c := range checks {
-		mark := "✓"
-		if !c.OK {
-			mark, allOK = "✗", false
-		}
+		allOK = allOK && c.OK
+		line := "  " + ui.Mark(c.OK) + " " + c.Name
 		if c.Detail != "" {
-			fmt.Printf("  %s %s — %s\n", mark, c.Name, c.Detail)
-		} else {
-			fmt.Printf("  %s %s\n", mark, c.Name)
+			line += ui.Dim.Render(" — " + c.Detail)
 		}
+		fmt.Println(line)
 	}
 	return allOK
 }
@@ -538,12 +537,15 @@ func confirm(prompt string, def bool) bool {
 
 func cmdTUI() {
 	_, drv := loadDriver()
-	quota := ""
-	if q, err := drv.Headroom(context.Background()); err == nil {
-		quota = q.Detail
-	}
 	action, err := tui.Run(tui.Options{
-		Quota: quota,
+		// Async: the TUI opens instantly and the quota fills in when it lands.
+		FetchQuota: func() string {
+			q, err := drv.Headroom(context.Background())
+			if err != nil {
+				return ""
+			}
+			return q.Detail
+		},
 		Fetch: func() ([]driver.Session, error) {
 			sessions, err := drv.List(context.Background())
 			if err != nil {
