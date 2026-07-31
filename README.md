@@ -52,9 +52,17 @@ verified spike numbers: [docs/SPEC.md](docs/SPEC.md), [spike/](spike/).
 - Headless Chromium is in the image (playwright's build plus its system
   libraries), so browser MCPs and skills — playwright, screenshots, web
   automation — work out of the box. Agents drive it headless; it's a server.
-- `pier port <session> 3000 5432` holds port forwards open through the
-  tunnel: the session's dev server in your local browser, its database in
-  your local psql. `8080:3000` maps local:session; ctrl-c stops.
+- `pier proxy` gives every running session its own hostname: open
+  `http://payments-retry.pier:3000` in your browser, `psql -h
+  payments-retry.pier` in your terminal. Each session gets a private
+  loopback IP, and whatever ports it actually listens on are discovered and
+  mirrored live — start a dev server in the session and the port just
+  appears. One sudo on first run (a resolver file + loopback aliases, the
+  same split-DNS trick VPNs use); macOS for now. A live connection counts
+  as attachment, so a session never parks under your open browser tab or
+  psql — and a forgotten tab keeping a VM awake is your call to close.
+  `pier port <session> 3000` stays as the manual, zero-sudo fallback
+  (`8080:3000` maps local:session).
 - Creating from the TUI doesn't block: the session builds in the background
   and sits in the list as `creating` until its bootstrap finishes.
 - If the repo has a `.pier-setup.sh`, it runs asynchronously in a tmux window

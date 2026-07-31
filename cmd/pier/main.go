@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -23,6 +24,7 @@ import (
 	"github.com/kerem-kaynak/pier/internal/config"
 	"github.com/kerem-kaynak/pier/internal/driver"
 	"github.com/kerem-kaynak/pier/internal/driver/awsec2"
+	"github.com/kerem-kaynak/pier/internal/proxy"
 	"github.com/kerem-kaynak/pier/internal/tui"
 	"github.com/kerem-kaynak/pier/internal/ui"
 	"github.com/kerem-kaynak/pier/internal/wizard"
@@ -52,7 +54,9 @@ usage:
   pier attach <session>     attach (auto-resumes if parked)
   pier mcp login <session>  authenticate every MCP server that still needs it
                             (one browser approval each; add a server name to redo one)
-  pier port <session> <port> [port...]  forward ports until ctrl-c
+  pier proxy                every running session as <session>.pier — open ports
+                            mirrored live for your browser/psql (macOS; one sudo)
+  pier port <session> <port> [port...]  forward ports by hand until ctrl-c
                             (3000 = same both sides, 8080:3000 = local:session)
   pier rm <session> [-f]    destroy session and its disk
   pier keep <session>       pin: disable idle self-park
@@ -77,6 +81,8 @@ func main() {
 		cmdAttach(args[1:])
 	case "mcp":
 		cmdMCP(args[1:])
+	case "proxy":
+		cmdProxy()
 	case "port":
 		cmdPort(args[1:])
 	case "rm":
@@ -502,9 +508,22 @@ func mcpAuthed(credJSON, server string) bool {
 	return false
 }
 
+// cmdProxy: `pier proxy` — every running session gets a hostname
+// (<session>.pier) with its listening ports mirrored automatically; live
+// connections keep the session from parking. All the machinery lives in
+// internal/proxy; runs in the foreground until ctrl-c.
+func cmdProxy() {
+	_, drv := loadDriver()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := proxy.Run(ctx, drv, proxy.Options{StateDir: config.Dir(), Out: os.Stdout}); err != nil {
+		fatal(err)
+	}
+}
+
 // cmdPort: `pier port <session> <port> [port...]` — hold ssh -L forwards open
-// so the laptop reaches services inside the session: the dev server in your
-// browser, the database in your local psql. "8080:3000" maps local:session.
+// by hand. The zero-sudo, works-anywhere fallback to `pier proxy`; "8080:3000"
+// maps local:session.
 func cmdPort(args []string) {
 	if len(args) < 2 {
 		fatal(fmt.Errorf("usage: pier port <session> <port> [port...]   (3000, or local:session like 8080:3000)"))

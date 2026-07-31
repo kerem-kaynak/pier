@@ -270,6 +270,10 @@ func (d *Driver) PortForwardCommand(ctx context.Context, id string, pairs [][2]i
 	return cmd, nil
 }
 
+func (d *Driver) SSHTarget(ctx context.Context, id string) ([]string, string, error) {
+	return d.sshOpts(id), "agent@" + id, nil
+}
+
 func (d *Driver) Exec(ctx context.Context, id string, command string) (string, error) {
 	return d.sshRun(ctx, id, command)
 }

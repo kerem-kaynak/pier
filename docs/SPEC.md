@@ -106,9 +106,16 @@ state, nothing to configure. `pier ls --all` can show teammates' sessions
 ## 6. Parking policy (supervisor)
 
 `pier-supervisor` runs in every VM with **zero cloud credentials** — parking
-is the VM shutting itself down. Every 30s it derives:
+is the VM shutting itself down. Every 5s (fast enough that the beacon's port
+list feels live to `pier proxy`; the activity windows still span ~30s) it
+derives:
 
-- `attached` — tmux has ≥1 client
+- `attached` — tmux has ≥1 client, **or a live forwarded TCP connection**
+  (established sshd-owned sockets that aren't the :22 transport — your
+  browser or psql on a mirrored port). A session never parks under an open
+  connection; a forgotten tab keeping it awake is deliberately the user's
+  problem. App→app loopback traffic (dev server holding a DB pool) doesn't
+  count — only sshd's forward dials do.
 - `busy` — agent process-tree CPU above threshold in window, or recent pty
   output (heuristic; harnesses stay stock, no hooks)
 
@@ -126,6 +133,41 @@ avg60 ≥ 40, memory ≥ 10) — which ls/TUI render as `working (strained)`, th
 nudge toward `pier resize`. The supervisor never resizes anything itself: the
 VM has no cloud credentials (invariant), and auto-scaling is a surprise-cost
 footgun. The human is the trigger; the fix is one command.
+
+The beacon additionally lists the session's listening TCP ports (one
+`sudo ss -Htnap` pass; sshd and systemd-resolved excluded) — this is how
+`pier proxy` knows what to mirror without the user declaring anything.
+
+### 6.1 Hostnames: `pier proxy`
+
+`pier proxy` (foreground, ctrl-c to stop) gives every **running** session its
+own hostname: `http://<session>.pier:3000` in the browser, `psql -h
+<session>.pier` — real port numbers, any TCP client, zero per-port commands.
+All machinery lives in `internal/proxy`; the rest of the product contributes
+only `Driver.SSHTarget` (the raw ssh recipe) and the beacon's port list.
+
+- **Names**: a ~100-line UDP responder answers A queries for `*.pier`,
+  wired in system-wide via `/etc/resolver/pier` — the split-DNS mechanism
+  VPNs use, honored by browsers and getaddrinfo alike. AAAA/HTTPS queries
+  get NOERROR-empty (never NXDOMAIN, which would negative-cache the name).
+- **IPs**: each session gets a stable private loopback IP (127.94.0.101+,
+  32 slots; the resolver sits on 127.94.0.53:53). macOS needs `ifconfig lo0
+  alias` per IP — the one sudo, disclosed before it runs; aliases are inert
+  /32s that vanish at reboot. Per-session IPs are what let two sessions both
+  serve :3000 without colliding — pier's most normal situation.
+- **Forwards**: one multiplexed OpenSSH master per running session
+  (`-M -S <ctl> -N` over the SSM tunnel). Beacon polls ride the mux as exec
+  channels (no new SSM sessions, no AWS API); forwards are added/removed
+  live with `ssh -O forward/cancel -L <ip>:<port>:localhost:<port>` as the
+  port list changes. Stock OpenSSH, shell-out only — no SSH library.
+- **Park-neutral by design**: masters and beacon polls don't touch tmux,
+  ptys, or forwarded sockets, so watching a session doesn't keep it awake —
+  only actual connections do (§6). Parked sessions' names stop resolving
+  rather than auto-resuming: a stray tab must not wake a stopped VM.
+- Sessions created before the port-discovery supervisor get a one-time
+  warning (recreate to mirror); `pier port` remains the manual, zero-sudo,
+  any-OS fallback. macOS-only for now (Linux would need an /etc/hosts block
+  or resolved glue — cut until asked for).
 
 ## 7. Speed
 
@@ -236,7 +278,9 @@ pier ls                 list own sessions
 pier attach <match>     reattach; resumes if parked
 pier mcp login <match> [server]  browser-auth every MCP server that still needs it, sequentially
                         (callback rides the tunnel; server arg = redo just that one)
-pier port <match> <p> [p...]  hold local→session port forwards open (3000 or local:remote 8080:3000)
+pier proxy              every running session as <session>.pier, listening ports mirrored
+                        live onto a per-session loopback IP (§6.1; macOS, one sudo)
+pier port <match> <p> [p...]  manual port forwards, zero-sudo any-OS fallback (3000 or 8080:3000)
 pier rm <match>         destroy (instance + disk)
 pier keep <match>       disable auto-park for a session
 pier resize <match> <type>  change VM size (running: park→modify→resume; same arch)

@@ -109,6 +109,12 @@ type Driver interface {
 	// browser, its database in your local psql. pairs are {local, remote}.
 	PortForwardCommand(ctx context.Context, id string, pairs [][2]int) (*exec.Cmd, error)
 
+	// SSHTarget exposes the raw OpenSSH recipe for a session — option args
+	// and destination — for features that manage their own ssh processes
+	// (pier proxy's multiplexed masters and live-adjusted forwards). Pier's
+	// one remote mechanism is OpenSSH, so this is a contract, not a leak.
+	SSHTarget(ctx context.Context, id string) (opts []string, dest string, err error)
+
 	// Exec runs a one-shot command (status reads, push bootstrap) without a TTY.
 	Exec(ctx context.Context, id string, command string) (string, error)
 

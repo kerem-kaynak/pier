@@ -3,16 +3,21 @@
 // when the session parks itself, with zero cloud credentials — parking is
 // just `sudo shutdown -h now`, which stops the instance with the disk intact.
 //
-// Heuristic, checked every 30s:
+// Heuristic, checked every 5s (a fast tick keeps the beacon's port list
+// fresh for `pier proxy`; the activity windows below still span ~30s):
 //
-//	attached := tmux reports >=1 client
+//	attached := tmux reports >=1 client, or a live forwarded TCP connection
+//	            (someone's browser/psql on a mirrored port — never park
+//	            under an open connection; a forgotten tab keeping the VM
+//	            awake is the user's call)
 //	busy     := any claude/codex process above CPU threshold,
-//	            or a pty written to within the last tick
+//	            or a pty written to within the last ~30s
 //
 // attached or busy resets the idle clock. Detached+quiet past idle_timeout
 // parks. Detached but busy continuously past unattended_cap parks too (the
 // runaway brake). Config is re-read every tick so `pier keep` edits apply
-// live. State beacon: /run/pier/status.json (read by ls/TUI via ssh).
+// live. State beacon: /run/pier/status.json (read by ls/TUI via ssh) — also
+// carries the listening TCP ports so `pier proxy` knows what to mirror.
 package main
 
 import (
@@ -21,6 +26,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -29,7 +35,8 @@ import (
 const (
 	confPath   = "/etc/pier/supervisor.conf"
 	statusPath = "/run/pier/status.json"
-	tick       = 30 * time.Second
+	tick       = 5 * time.Second
+	ptyWindow  = 35 * time.Second
 	cpuBusyPct = 5.0
 	// Strain thresholds on the kernel's PSI avg60 (% of the last minute some
 	// task sat stalled on the resource). Surfaced by ls/TUI as a resize hint;
@@ -39,10 +46,15 @@ const (
 )
 
 type status struct {
-	State    string    `json:"state"` // attached | working | idle
-	Since    time.Time `json:"since"`
-	Strained bool      `json:"strained,omitempty"`
-	Reason   string    `json:"reason,omitempty"`
+	State string    `json:"state"` // attached | working | idle
+	Since time.Time `json:"since"`
+	// Listening is every user-relevant TCP port the session listens on
+	// (sshd/resolved excluded) — `pier proxy` mirrors exactly these. Always
+	// present, even empty: its absence means a pre-port-discovery supervisor.
+	Listening []int  `json:"listening"`
+	Tunnels   int    `json:"tunnels,omitempty"` // live forwarded connections
+	Strained  bool   `json:"strained,omitempty"`
+	Reason    string `json:"reason,omitempty"`
 }
 
 func main() {
@@ -52,7 +64,8 @@ func main() {
 
 	for {
 		idleTimeout, cap_ := readConf()
-		attached := tmuxAttached()
+		listening, tunnels := netSnapshot()
+		attached := tmuxAttached() || tunnels > 0
 		busy := agentBusy() || ptyActive()
 
 		now := time.Now()
@@ -76,6 +89,7 @@ func main() {
 		if last.State != st {
 			last = status{State: st, Since: now}
 		}
+		last.Listening, last.Tunnels = listening, tunnels
 		last.Strained = strained()
 		writeStatus(last)
 
@@ -142,19 +156,85 @@ func agentBusy() bool {
 	return false
 }
 
-// ptyActive reports whether any pseudo-terminal was written to since the
-// last tick — output flowing to a detached tmux pane counts as activity.
+// ptyActive reports whether any pseudo-terminal was written to recently —
+// output flowing to a detached tmux pane counts as activity. The window is
+// fixed (not tied to the tick) so the faster tick didn't tighten what
+// "recently" means.
 func ptyActive() bool {
 	ents, err := filepath.Glob("/dev/pts/[0-9]*")
 	if err != nil {
 		return false
 	}
 	for _, p := range ents {
-		if fi, err := os.Stat(p); err == nil && time.Since(fi.ModTime()) < tick+5*time.Second {
+		if fi, err := os.Stat(p); err == nil && time.Since(fi.ModTime()) < ptyWindow {
 			return true
 		}
 	}
 	return false
+}
+
+// netSnapshot surveys the session's TCP state in one `ss` pass: which ports
+// are listening (for the proxy to mirror) and how many live forwarded
+// connections exist (they block parking). Process names need root — the
+// agent user's NOPASSWD sudo covers it. Any failure reads as "no ports, no
+// tunnels": the proxy just sees nothing and parking falls back to the
+// tmux/CPU heuristics.
+func netSnapshot() ([]int, int) {
+	out, err := exec.Command("sudo", "-n", "ss", "-Htnap").Output()
+	if err != nil {
+		return []int{}, 0
+	}
+	return parseSS(string(out))
+}
+
+// parseSS reads `ss -Htnap` output. Listening ports exclude the plumbing
+// (sshd, systemd-resolved) and dedupe v4/v6. A "tunnel" is an established
+// connection owned by sshd that isn't the :22 transport itself — exactly the
+// loopback dials sshd makes to serve a forwarded port, and never app→app
+// traffic (a dev server holding a pooled DB connection must not block
+// parking forever).
+func parseSS(out string) (listening []int, tunnels int) {
+	seen := map[int]bool{}
+	for _, line := range strings.Split(out, "\n") {
+		f := strings.Fields(line)
+		if len(f) < 5 {
+			continue
+		}
+		local, peer, proc := f[3], f[4], strings.Join(f[5:], " ")
+		switch f[0] {
+		case "LISTEN":
+			if strings.Contains(proc, `"sshd"`) || strings.Contains(proc, `"systemd-resolve`) {
+				continue
+			}
+			if p := addrPort(local); p > 0 && p != 22 && !seen[p] {
+				seen[p] = true
+				listening = append(listening, p)
+			}
+		case "ESTAB":
+			if strings.Contains(proc, `"sshd"`) && addrPort(local) != 22 && addrPort(peer) != 22 {
+				tunnels++
+			}
+		}
+	}
+	sort.Ints(listening)
+	if listening == nil {
+		listening = []int{}
+	}
+	return listening, tunnels
+}
+
+// addrPort pulls the port off ss address forms: 0.0.0.0:22, *:3000,
+// 127.0.0.53%lo:53, [::1]:8080.
+func addrPort(addr string) int {
+	i := strings.LastIndexByte(addr, ':')
+	if i < 0 {
+		return 0
+	}
+	p, err := strconv.Atoi(addr[i+1:])
+	if err != nil {
+		return 0
+	}
+	return p
 }
 
 // strained reports sustained resource pressure. avg60 already smooths over a
