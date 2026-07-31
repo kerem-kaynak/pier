@@ -99,6 +99,11 @@ type Driver interface {
 	// session-manager-plugin, or `gcloud compute ssh --tunnel-through-iap`.
 	AttachCommand(ctx context.Context, id string) (*exec.Cmd, error)
 
+	// MCPLoginCommand runs `claude mcp login <server>` inside the session
+	// with the OAuth callback port tunneled back to the laptop, so
+	// browser-based MCP auth completes with one approval — no URL copying.
+	MCPLoginCommand(ctx context.Context, id, server string, port int) (*exec.Cmd, error)
+
 	// Exec runs a one-shot command (status reads, push bootstrap) without a TTY.
 	Exec(ctx context.Context, id string, command string) (string, error)
 

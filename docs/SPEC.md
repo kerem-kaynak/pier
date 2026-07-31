@@ -163,7 +163,9 @@ written back. Sources (wizard-detected, confirmed into the manifest):
 - repo `.env*` (create-time globs)
 - `~/.codex/` (auth.json, config.toml)
 - `~/.claude/` settings, `CLAUDE.md`, agents
-- gh token (`gh auth token`) for git push/PRs
+- a GitHub credential for git push/PRs and private-repo fetch: `gh auth
+  token` if gh is logged in, else the laptop's https git credential
+  (`git credential fill`) — never required, doctor reports which was found
 - Claude subscription auth on macOS lives in the Keychain → one-time
   `claude setup-token` during the wizard, injected as an env var in sessions.
   (Foundry/API-key setups need no token: their auth rides in
@@ -176,12 +178,14 @@ written back. Sources (wizard-detected, confirmed into the manifest):
   dialog never fires. Codex gets the workdir pre-trusted via a `[projects]`
   append to its copied config.toml. History and laptop-path project state
   stay home. MCP servers whose auth lives in the macOS Keychain (OAuth-based
-  remotes like Linear/Notion) carry their declaration but need a one-time
-  `claude mcp login <name>` in the session — tokens rotate on refresh, so
-  copying them would let two machines revoke each other. Create lists the
-  affected servers. Remotes that accept static keys (Linear does) can instead
-  be declared locally with an `Authorization` header, which travels whole —
-  then nothing ever re-asks.
+  remotes) carry their declaration but not their tokens — they rotate on
+  refresh, so copying them would let two machines revoke each other. Instead:
+  `pier mcp login <session> <server>` runs `claude mcp login` in the VM with
+  the OAuth callback port forwarded through the SSM tunnel — one browser
+  approval on the laptop completes the flow inside the session, token
+  persists on its disk across park/resume. Create lists the affected
+  servers. (Remotes that accept static keys can be declared locally with an
+  `Authorization` header, which travels whole — zero approvals.)
 
 ## 9. Setup wizard
 
@@ -218,6 +222,7 @@ pier                    TUI: list / attach / new / delete / pin
 pier <branch> [base]    create from cwd repo (branch off base, default HEAD) and attach
 pier ls                 list own sessions
 pier attach <match>     reattach; resumes if parked
+pier mcp login <match> [server]  one-time OAuth for a session's MCP server (callback rides the tunnel)
 pier rm <match>         destroy (instance + disk)
 pier keep <match>       disable auto-park for a session
 pier resize <match> <type>  change VM size (running: park→modify→resume; same arch)

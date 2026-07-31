@@ -44,9 +44,11 @@ verified spike numbers: [docs/SPEC.md](docs/SPEC.md), [spike/](spike/).
   `.env*`) plus tokens (`gh auth token`, `claude setup-token`).
 - MCP servers, agents, skills, and plugins travel with their config — auth
   included when it's static (env vars, API-key headers). OAuth-backed remote
-  MCPs keep their tokens in the OS keychain and rotate them, so those can't
-  be copied safely: they need one `claude mcp login <name>` per session, and
-  the create output lists which ones.
+  MCPs keep rotating tokens in the OS keychain, which can't be copied (two
+  machines sharing one revoke each other) — those get **one browser approval
+  per session**: `pier mcp login <session> <server>` runs the flow through
+  the session's tunnel, so you click the printed URL, approve, done. The
+  create output lists exactly which servers need it.
 - If the repo has a `.pier-setup.sh`, it runs asynchronously in a tmux window
   on first boot (deps, migrations, seeds).
 
@@ -61,14 +63,16 @@ create is much slower than that, it's one of two things:
   history through the SSM tunnel at ~1 MB/s (a 300 MB history ≈ 5 min). The
   create output says which mode you got and why. The fast path needs:
   - the repo hosted on GitHub, with the base commit pushed, and
-  - for **private** repos: the gh CLI logged in locally (`gh auth login`).
-    pier injects `gh auth token` into the session, which is also what makes
+  - for **private** repos: any GitHub credential on the laptop — pier takes
+    the gh CLI's login if you have it, otherwise whatever your git https
+    credential helper already pushes with. The same credential is what makes
     `git push` and PRs work from the VM. Public repos need nothing.
 
   Before skipping the bundle, pier verifies the GitHub fetch works with
   exactly the auth the session will have — anything doubtful degrades to the
-  slow-but-universal bundle instead of failing. gh is never *required*;
-  without it everything still works, just through the tunnel.
+  slow-but-universal bundle instead of failing. No GitHub credential is ever
+  *required*: sessions run fine without one, just with tunnel-speed transfers
+  and no push. `pier doctor` shows whether one was found.
 
 ## Build
 

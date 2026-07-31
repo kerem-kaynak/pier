@@ -156,6 +156,15 @@ func (d *Driver) Doctor(ctx context.Context) []driver.Check {
 	tool("session-manager-plugin", "session-manager-plugin", "brew install --cask session-manager-plugin")
 	tool("ssh + ssh-keygen", "ssh-keygen", "install OpenSSH")
 
+	// Optional but load-bearing for GitHub repos: without it, private repos
+	// ship the slow full bundle and `git push` from sessions can't auth.
+	gh := driver.Check{Name: "github credential", OK: GitHubToken() != "",
+		Detail: "private-repo fast fetch + push from sessions"}
+	if !gh.OK {
+		gh.Detail = "none found (optional) — private repos use the slow bundle path and sessions can't push; fix: `gh auth login`"
+	}
+	checks = append(checks, gh)
+
 	me, err := d.user(ctx)
 	if err != nil {
 		checks = append(checks, driver.Check{Name: "AWS credentials", Detail: err.Error()})

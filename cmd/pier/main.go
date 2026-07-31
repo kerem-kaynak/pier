@@ -8,9 +8,11 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"text/tabwriter"
@@ -46,6 +48,8 @@ usage:
       --no-park               shorthand for --idle never
   pier ls                   list sessions
   pier attach <session>     attach (auto-resumes if parked)
+  pier mcp login <session> [server]   one-time OAuth for an MCP server in the session
+                            (no server: list the session's MCP servers + status)
   pier rm <session> [-f]    destroy session and its disk
   pier keep <session>       pin: disable idle self-park
   pier resize <session> <type>  grow/shrink the VM (running: ~40s park+resume; same arch only)
@@ -67,6 +71,8 @@ func main() {
 		cmdLS()
 	case "attach":
 		cmdAttach(args[1:])
+	case "mcp":
+		cmdMCP(args[1:])
 	case "rm":
 		cmdRM(args[1:])
 	case "keep":
@@ -115,17 +121,16 @@ func newDriver(cfg config.Config) (driver.Driver, error) {
 	}
 }
 
-// sessionEnv builds ~/.config/pier/env for new sessions: gh token from the
-// local gh login, Claude token from config (macOS keychain escape hatch).
+// sessionEnv builds ~/.config/pier/env for new sessions: a GitHub credential
+// from wherever the laptop already has one (gh login or git's credential
+// helper), Claude token from config (macOS keychain escape hatch).
 func sessionEnv(cfg config.Config) map[string]string {
 	env := map[string]string{}
 	if t := cfg.Secrets.ClaudeOAuthToken; t != "" {
 		env["CLAUDE_CODE_OAUTH_TOKEN"] = t
 	}
-	if out, err := exec.Command("gh", "auth", "token").Output(); err == nil {
-		if t := strings.TrimSpace(string(out)); t != "" {
-			env["GH_TOKEN"] = t
-		}
+	if t := awsec2.GitHubToken(); t != "" {
+		env["GH_TOKEN"] = t
 	}
 	return env
 }
@@ -377,6 +382,63 @@ func cmdAttach(args []string) {
 	s := match(drv, args[0])
 	resumeIfParked(drv, s)
 	attach(drv, s.ID)
+}
+
+var mcpServerName = regexp.MustCompile(`^[A-Za-z0-9._:@-]+$`)
+
+// cmdMCP: `pier mcp login <session> [server]` — one-time OAuth for MCP
+// servers whose tokens live in the laptop's keychain and can't be copied
+// (they rotate; two machines sharing one revoke each other). The callback
+// port rides the existing SSM tunnel, so the browser approval on the laptop
+// completes the flow inside the VM: click, approve, done — no URL copying.
+func cmdMCP(args []string) {
+	if len(args) < 2 || args[0] != "login" {
+		fatal(fmt.Errorf("usage: pier mcp login <session> [server]"))
+	}
+	ctx := context.Background()
+	_, drv := loadDriver()
+	s := match(drv, args[1])
+	resumeIfParked(drv, s)
+
+	if len(args) == 2 { // no server named: show what the session has
+		fmt.Println(ui.Dim.Render("  asking the session for its MCP servers..."))
+		out, err := drv.Exec(ctx, s.ID, "claude mcp list 2>&1 || true")
+		if err != nil {
+			fatal(err)
+		}
+		fmt.Println(out)
+		fmt.Println("\nauthenticate one with " + ui.Accent.Render("pier mcp login "+s.Name+" <server>"))
+		return
+	}
+	server := args[2]
+	if !mcpServerName.MatchString(server) {
+		fatal(fmt.Errorf("implausible server name %q", server))
+	}
+	port, err := freePort()
+	if err != nil {
+		fatal(err)
+	}
+	fmt.Println("  " + ui.Bold.Render("authenticating "+server) +
+		ui.Dim.Render(" — open the URL below in your browser and approve"))
+	fmt.Println(ui.Dim.Render("  the callback tunnels back into the session; the token lives on its disk across park/resume"))
+	cmd, err := drv.MCPLoginCommand(ctx, s.ID, server, port)
+	if err != nil {
+		fatal(err)
+	}
+	if err := cmd.Run(); err != nil {
+		fatal(fmt.Errorf("mcp login: %w", err))
+	}
+}
+
+// freePort grabs an OS-assigned port. Local and remote must match: the OAuth
+// redirect URL embeds the one port claude registers inside the VM.
+func freePort() (int, error) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return 0, err
+	}
+	defer l.Close()
+	return l.Addr().(*net.TCPAddr).Port, nil
 }
 
 func resumeIfParked(drv driver.Driver, s driver.Session) {

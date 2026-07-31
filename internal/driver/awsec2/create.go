@@ -131,7 +131,7 @@ func (d *Driver) Create(ctx context.Context, spec driver.CreateSpec) (*driver.Se
 	}
 	home, _ := os.UserHomeDir()
 	if names := oauthRemotes(home, spec.Repo); len(names) > 0 {
-		progress("mcp " + strings.Join(names, ", ") + ": oauth tokens can't travel — run `claude mcp login <name>` once in the session")
+		progress("mcp " + strings.Join(names, ", ") + ": one-time oauth — `pier mcp login " + spec.Name + " <server>` when it's up")
 	}
 	for _, p := range pushes { // biggest last: its scp meter is the wait
 		if err := d.scpTo(ctx, id, p.local, p.remote); err != nil {
@@ -430,6 +430,32 @@ func originInfo(repo, sha string) (mode, url string) {
 		return "origin", fetchable
 	}
 	return "thin", fetchable
+}
+
+// GitHubToken finds a GitHub credential without insisting on any one tool:
+// gh's login first, then whatever https credential the user's git already
+// pushes with (osxkeychain, credential-store, ...). Never prompts. Sessions
+// use it for private-repo fetches and for `git push`/PRs from the VM — the
+// only piece of pier that wants a GitHub credential at all.
+func GitHubToken() string {
+	if out, err := exec.Command("gh", "auth", "token").Output(); err == nil {
+		if t := strings.TrimSpace(string(out)); t != "" {
+			return t
+		}
+	}
+	fill := exec.Command("git", "credential", "fill")
+	fill.Stdin = strings.NewReader("protocol=https\nhost=github.com\n\n")
+	fill.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_ASKPASS=")
+	out, err := fill.Output()
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if t, ok := strings.CutPrefix(strings.TrimSpace(line), "password="); ok && t != "" {
+			return t
+		}
+	}
+	return ""
 }
 
 // originReachable proves, before skipping the bundle, that the exact fetch

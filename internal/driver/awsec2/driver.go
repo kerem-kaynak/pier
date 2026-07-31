@@ -231,6 +231,25 @@ func (d *Driver) AttachCommand(ctx context.Context, id string) (*exec.Cmd, error
 	return cmd, nil
 }
 
+// MCPLoginCommand: interactive `claude mcp login` with the OAuth callback
+// port forwarded through the SSM tunnel. The auth URL prints in the user's
+// terminal (BROWSER=echo keeps headless claude from skipping straight to
+// paste mode); opening it on the laptop completes the provider's
+// localhost redirect INTO the VM's waiting listener — one browser approval,
+// no URL copy-paste. The token then lives on the session disk, so this is
+// once per session, surviving park/resume. Same local/remote port: the
+// redirect URL embeds the port claude registered on the VM.
+func (d *Driver) MCPLoginCommand(ctx context.Context, id, server string, port int) (*exec.Cmd, error) {
+	remote := fmt.Sprintf(
+		"set -a; . ~/.config/pier/env 2>/dev/null; set +a; BROWSER=echo exec claude mcp login '%s' --callback-port %d",
+		server, port)
+	args := append(d.sshOpts(id),
+		"-t", "-L", fmt.Sprintf("%d:localhost:%d", port, port), "agent@"+id, remote)
+	cmd := exec.CommandContext(ctx, "ssh", args...)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	return cmd, nil
+}
+
 func (d *Driver) Exec(ctx context.Context, id string, command string) (string, error) {
 	return d.sshRun(ctx, id, command)
 }
