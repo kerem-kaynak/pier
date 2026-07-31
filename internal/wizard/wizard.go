@@ -240,10 +240,17 @@ func detectManifest() []string {
 		".claude/CLAUDE.md",
 		".claude/settings.json",
 		".claude/agents",
+		".claude/commands",
+		".claude/skills",
+		".claude/plugins",
 		".claude/.credentials.json", // Linux; macOS uses the token flow
 		".codex/config.toml",
 		".codex/auth.json",
 		".codex/AGENTS.md",
+		".codex/prompts",
+		".codex/skills",
+		// NOT .codex/plugins: a machine-specific runtime cache (hundreds of
+		// MB); config.toml declares the plugins and codex re-materializes.
 	}
 	var found []string
 	for _, c := range candidates {

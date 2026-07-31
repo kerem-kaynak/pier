@@ -34,7 +34,8 @@ func TestDurConf(t *testing.T) {
 
 func TestClaudeSeed(t *testing.T) {
 	home := t.TempDir()
-	if got := claudeSeed(home); got != nil {
+	wd := "/home/agent/work/myrepo"
+	if got := claudeSeed(home, wd); got != nil {
 		t.Errorf("no local .claude.json should seed nothing, got %s", got)
 	}
 	write := func(s string) {
@@ -43,16 +44,63 @@ func TestClaudeSeed(t *testing.T) {
 		}
 	}
 	write(`{"hasCompletedOnboarding":false,"theme":"dark"}`)
-	if got := claudeSeed(home); got != nil {
+	if got := claudeSeed(home, wd); got != nil {
 		t.Errorf("incomplete onboarding should seed nothing, got %s", got)
 	}
-	write(`{"hasCompletedOnboarding":true,"theme":"dark","projects":{"/Users/x":{}},"oauthAccount":{"x":1}}`)
-	got := string(claudeSeed(home))
-	if !strings.Contains(got, `"hasCompletedOnboarding":true`) || !strings.Contains(got, `"theme":"dark"`) {
-		t.Errorf("seed missing onboarding/theme: %s", got)
+	write(`{"hasCompletedOnboarding":true,"theme":"dark",
+		"projects":{"/Users/x":{"lastCost":1}},"oauthAccount":{"x":1},
+		"mcpServers":{
+			"portable":{"type":"stdio","command":"npx","args":["-y","x"],"env":{"API_KEY":"k"}},
+			"macapp":{"type":"stdio","command":"/Applications/X.app/Contents/MacOS/x"}}}`)
+	got := string(claudeSeed(home, wd))
+	for _, want := range []string{`"hasCompletedOnboarding":true`, `"theme":"dark"`,
+		`"portable"`, `"API_KEY":"k"`, wd, `"hasTrustDialogAccepted":true`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("seed missing %s: %s", want, got)
+		}
 	}
-	if strings.Contains(got, "projects") || strings.Contains(got, "oauthAccount") {
-		t.Errorf("seed must not carry laptop state: %s", got)
+	for _, bad := range []string{"macapp", "oauthAccount", "/Users/x"} {
+		if strings.Contains(got, bad) {
+			t.Errorf("seed must not carry %s: %s", bad, got)
+		}
+	}
+}
+
+func TestFetchURL(t *testing.T) {
+	for in, want := range map[string]string{
+		"git@github.com:org/repo.git":     "https://github.com/org/repo",
+		"ssh://git@github.com/org/repo":   "https://github.com/org/repo",
+		"https://github.com/org/repo.git": "https://github.com/org/repo.git",
+		"https://gitlab.com/org/repo":     "",
+		"git@bitbucket.org:org/repo.git":  "",
+	} {
+		if got := fetchURL(in); got != want {
+			t.Errorf("fetchURL(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestRenderBootstrapModes(t *testing.T) {
+	spec := driver.CreateSpec{Name: "x", Repo: "/tmp/myrepo", Branch: "feat"}
+
+	origin := renderBootstrap(spec, "origin", "abc123", "https://github.com/o/r")
+	for _, want := range []string{
+		"git fetch -q --no-tags origin abc123",
+		"git remote add origin 'https://github.com/o/r'",
+		"git reset -q --hard abc123",
+		`[projects."/home/agent/work/myrepo"]`, // codex pre-trust
+	} {
+		if !strings.Contains(origin, want) {
+			t.Errorf("origin-mode bootstrap missing %q", want)
+		}
+	}
+	if strings.Contains(origin, "origin) git fetch -q /tmp/pier.bundle") {
+		t.Error("origin mode must not fetch a bundle")
+	}
+
+	full := renderBootstrap(spec, "full", "abc123", "")
+	if !strings.Contains(full, "git fetch -q /tmp/pier.bundle refs/pier/export") {
+		t.Error("full-mode bootstrap must fetch the bundle")
 	}
 }
 

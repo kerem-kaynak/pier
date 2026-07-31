@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -71,10 +72,24 @@ func (d *Driver) Create(ctx context.Context, spec driver.CreateSpec) (*driver.Se
 	os.Rename(d.keyPath(tmpID)+".pub", d.keyPath(id)+".pub")
 	progress(fmt.Sprintf("launched %s (%s, %s)", id, d.InstanceType, arch))
 
-	// Local prep while the instance boots (~30s).
-	bundle := filepath.Join(work, "pier.bundle")
-	if err := gitBundle(spec.Repo, baseRef(spec), bundle); err != nil {
-		return nil, fmt.Errorf("bundling %s: %w", spec.Repo, err)
+	// Local prep while the instance boots (~30s). The SSM tunnel moves ~1 MB/s,
+	// so ship as little as possible through it: when the base commit is
+	// already on a GitHub origin the VM fetches the repo from GitHub directly
+	// (~100x faster) and the laptop sends at most a thin local-delta bundle.
+	sha, err := gitOut(spec.Repo, "rev-parse", "--verify", baseRef(spec)+"^{commit}")
+	if err != nil {
+		return nil, fmt.Errorf("base ref %q not found", baseRef(spec))
+	}
+	mode, origin := originInfo(spec.Repo, sha)
+	bundle := ""
+	if mode != "origin" {
+		bundle = filepath.Join(work, "pier.bundle")
+		switch err := gitBundle(spec.Repo, sha, bundle, mode == "thin"); {
+		case errors.Is(err, errEmptyBundle): // stale --contains; origin has it all
+			mode, bundle = "origin", ""
+		case err != nil:
+			return nil, fmt.Errorf("bundling %s: %w", spec.Repo, err)
+		}
 	}
 	filesTar := filepath.Join(work, "pier-files.tar")
 	if err := buildFilesTar(filesTar, d.Manifest, spec.Repo, d.SessionEnv); err != nil {
@@ -85,27 +100,31 @@ func (d *Driver) Create(ctx context.Context, spec driver.CreateSpec) (*driver.Se
 		return nil, err
 	}
 	bootPath := filepath.Join(work, "pier-bootstrap.sh")
-	if err := os.WriteFile(bootPath, []byte(renderBootstrap(spec)), 0o755); err != nil {
+	if err := os.WriteFile(bootPath, []byte(renderBootstrap(spec, mode, sha, origin)), 0o755); err != nil {
 		return nil, err
 	}
-	progress("packed workspace bundle + secrets")
 
 	progress("waiting for SSH over SSM (boot ~30s)")
 	if err := d.waitSSH(ctx, id, 240*time.Second); err != nil {
 		return nil, err
 	}
 
-	var bundleMB float64
-	if fi, err := os.Stat(bundle); err == nil {
-		bundleMB = float64(fi.Size()) / 1e6
-	}
-	progress(fmt.Sprintf("pushing workspace (%.0f MB)", bundleMB))
-	for _, p := range []struct{ local, remote string }{
+	pushes := []struct{ local, remote string }{
 		{supPath, "/tmp/pier-supervisor"},
 		{bootPath, "/tmp/pier-bootstrap.sh"},
 		{filesTar, "/tmp/pier-files.tar"},
-		{bundle, "/tmp/pier.bundle"}, // biggest last: its scp meter is the wait
-	} {
+	}
+	switch mode {
+	case "origin":
+		progress("pushing secrets — the repo comes straight from github on the VM")
+	case "thin":
+		progress(fmt.Sprintf("pushing local-only commits (%s) — the rest comes from github", fileMB(bundle)))
+		pushes = append(pushes, struct{ local, remote string }{bundle, "/tmp/pier.bundle"})
+	default:
+		progress(fmt.Sprintf("pushing workspace (%s — full history; no github origin has the base)", fileMB(bundle)))
+		pushes = append(pushes, struct{ local, remote string }{bundle, "/tmp/pier.bundle"})
+	}
+	for _, p := range pushes { // biggest last: its scp meter is the wait
 		if err := d.scpTo(ctx, id, p.local, p.remote); err != nil {
 			return nil, err
 		}
@@ -320,11 +339,24 @@ set -a; . "$HOME/.config/pier/env" 2>/dev/null || true; set +a
 mkdir -p "$HOME/work/{{REPO}}"
 cd "$HOME/work/{{REPO}}"
 git init -q -b '{{BRANCH}}'
-git fetch -q /tmp/pier.bundle refs/pier/export
-git reset -q --hard FETCH_HEAD
 {{GITCONFIG}}
-tar -xf /tmp/pier-files.tar -C . --strip-components=1 repo 2>/dev/null || true
+if [ -n '{{ORIGIN}}' ]; then git remote add origin '{{ORIGIN}}'; fi
+# gh brokers git credentials for origin fetches; on a stock AMI it may still
+# be installing under cloud-init — wait only when it's load-bearing.
+if [ '{{MODE}}' != full ] && [ -n "${GH_TOKEN:-}" ] && ! command -v gh >/dev/null; then sudo cloud-init status --wait >/dev/null || true; fi
 { command -v gh >/dev/null && [ -n "${GH_TOKEN:-}" ] && gh auth setup-git >/dev/null 2>&1; } || true
+case '{{MODE}}' in
+  origin) git fetch -q --no-tags origin {{SHA}} ;;
+  thin)   git fetch -q --no-tags origin && git fetch -q /tmp/pier.bundle refs/pier/export ;;
+  *)      git fetch -q /tmp/pier.bundle refs/pier/export ;;
+esac
+git reset -q --hard {{SHA}}
+tar -xf /tmp/pier-files.tar -C . --strip-components=1 repo 2>/dev/null || true
+
+# Codex records folder trust in config.toml; pre-trust the workdir the user
+# created this session from (claude's equivalent rides the ~/.claude.json seed).
+mkdir -p "$HOME/.codex"
+grep -q 'work/{{REPO}}' "$HOME/.codex/config.toml" 2>/dev/null || printf '\n[projects."/home/agent/work/{{REPO}}"]\ntrust_level = "trusted"\n' >> "$HOME/.codex/config.toml"
 
 tmux has-session -t main 2>/dev/null || tmux new-session -d -s main -c "$HOME/work/{{REPO}}"
 if [ -x ./.pier-setup.sh ]; then
@@ -335,7 +367,7 @@ rm -f /tmp/pier.bundle /tmp/pier-files.tar /tmp/pier-supervisor /tmp/pier-bootst
 echo bootstrapped
 `
 
-func renderBootstrap(spec driver.CreateSpec) string {
+func renderBootstrap(spec driver.CreateSpec, mode, sha, origin string) string {
 	var gitcfg []string
 	line := func(args ...string) {
 		out, err := gitOut(spec.Repo, args...)
@@ -345,18 +377,18 @@ func renderBootstrap(spec driver.CreateSpec) string {
 				gitcfg = append(gitcfg, "git config user.name '"+out+"'")
 			case "user.email":
 				gitcfg = append(gitcfg, "git config user.email '"+out+"'")
-			case "origin":
-				gitcfg = append(gitcfg, "git remote add origin '"+out+"'")
 			}
 		}
 	}
 	line("config", "user.name")
 	line("config", "user.email")
-	line("remote", "get-url", "origin")
 	return strings.NewReplacer(
 		"{{REPO}}", filepath.Base(spec.Repo),
 		"{{BRANCH}}", spec.Branch,
 		"{{GITCONFIG}}", strings.Join(gitcfg, "\n"),
+		"{{MODE}}", mode,
+		"{{SHA}}", sha,
+		"{{ORIGIN}}", origin,
 	).Replace(bootstrapTmpl)
 }
 
@@ -367,45 +399,127 @@ func gitOut(repo string, args ...string) (string, error) {
 	return strings.TrimSpace(string(out)), err
 }
 
-// gitBundle packs full history up to baseRef into a bundle exposing a single
-// ref (refs/pier/export) that the VM fetches — includes uncommitted nothing,
-// clean by construction.
-func gitBundle(repo, ref, dst string) error {
-	sha, err := gitOut(repo, "rev-parse", "--verify", ref+"^{commit}")
-	if err != nil {
-		return fmt.Errorf("base ref %q not found", ref)
+// originInfo decides how the repo reaches the VM. mode "origin": the base
+// commit is reachable from an origin ref, so the VM fetches it from GitHub
+// and nothing repo-shaped rides the SSM tunnel. "thin": GitHub has the
+// shared history, ship only the local-delta bundle. "full": no usable
+// GitHub origin — ship everything. The returned url is what the VM's origin
+// remote is set to (GitHub ssh forms become https so the GH_TOKEN credential
+// helper can auth; ~/.ssh deliberately never travels).
+func originInfo(repo, sha string) (mode, url string) {
+	raw, err := gitOut(repo, "remote", "get-url", "origin")
+	if err != nil || raw == "" {
+		return "full", ""
 	}
+	fetchable := fetchURL(raw)
+	if fetchable == "" {
+		return "full", raw // non-GitHub origin: still add the remote, bundle the data
+	}
+	// --contains reflects the last local fetch: stale-empty just means a
+	// bigger bundle; stale-nonempty (force-push) fails the VM fetch loudly.
+	if out, err := gitOut(repo, "branch", "-r", "--contains", sha, "--list", "origin/*"); err == nil && out != "" {
+		return "origin", fetchable
+	}
+	return "thin", fetchable
+}
+
+var sshGithub = regexp.MustCompile(`^(?:ssh://)?git@github\.com[:/](.+?)(?:\.git)?$`)
+
+// fetchURL normalizes a GitHub origin to https (empty for non-GitHub hosts).
+func fetchURL(raw string) string {
+	if m := sshGithub.FindStringSubmatch(raw); m != nil {
+		return "https://github.com/" + m[1]
+	}
+	if strings.HasPrefix(raw, "https://github.com/") {
+		return raw
+	}
+	return ""
+}
+
+var errEmptyBundle = fmt.Errorf("empty bundle")
+
+// gitBundle packs history reachable from sha into a bundle exposing a single
+// ref (refs/pier/export) that the VM fetches — includes uncommitted nothing,
+// clean by construction. thin subtracts everything origin already has,
+// leaving prerequisites the VM satisfies by fetching origin first.
+func gitBundle(repo, sha, dst string, thin bool) error {
 	if _, err := gitOut(repo, "update-ref", "refs/pier/export", sha); err != nil {
 		return err
 	}
 	defer gitOut(repo, "update-ref", "-d", "refs/pier/export")
-	if out, err := exec.Command("git", "-C", repo, "bundle", "create", dst, "refs/pier/export").CombinedOutput(); err != nil {
+	args := []string{"-C", repo, "bundle", "create", dst, "refs/pier/export"}
+	if thin {
+		args = append(args, "--not", "--remotes=origin")
+	}
+	if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+		if strings.Contains(strings.ToLower(string(out)), "empty bundle") {
+			return errEmptyBundle
+		}
 		return fmt.Errorf("git bundle: %s", strings.TrimSpace(string(out)))
 	}
 	return nil
 }
 
-// claudeSeed builds a minimal ~/.claude.json for the VM — just the laptop's
-// theme + onboarding-done flag, so a fresh session's first `claude` skips the
-// theme picker. The rest of the local state file (history, per-path project
-// trust) is laptop-specific noise and deliberately stays home.
-func claudeSeed(home string) []byte {
+func fileMB(path string) string {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return "?"
+	}
+	return fmt.Sprintf("%.1f MB", float64(fi.Size())/1e6)
+}
+
+// claudeSeed builds a minimal ~/.claude.json for the VM: theme +
+// onboarding-done (skips the theme picker), the user-scope MCP servers that
+// can actually run on Linux (their auth lives in the config's env blocks and
+// travels with it), and pre-trust for the session workdir — the trust dialog
+// would only re-ask what creating the session already answered. The rest of
+// the local state file (history, per-path project state) is laptop-specific
+// noise and deliberately stays home.
+func claudeSeed(home, workdir string) []byte {
 	b, err := os.ReadFile(filepath.Join(home, ".claude.json"))
 	if err != nil {
 		return nil
 	}
 	var local struct {
-		Theme                  string `json:"theme"`
-		HasCompletedOnboarding bool   `json:"hasCompletedOnboarding"`
+		Theme                  string                     `json:"theme"`
+		HasCompletedOnboarding bool                       `json:"hasCompletedOnboarding"`
+		McpServers             map[string]json.RawMessage `json:"mcpServers"`
 	}
 	if json.Unmarshal(b, &local) != nil || !local.HasCompletedOnboarding {
 		return nil
 	}
-	seed := map[string]any{"hasCompletedOnboarding": true}
+	seed := map[string]any{
+		"hasCompletedOnboarding": true,
+		"projects": map[string]any{workdir: map[string]bool{
+			"hasTrustDialogAccepted":        true,
+			"hasCompletedProjectOnboarding": true,
+		}},
+	}
 	if local.Theme != "" {
 		seed["theme"] = local.Theme
 	}
+	if mcp := portableMCP(local.McpServers); len(mcp) > 0 {
+		seed["mcpServers"] = mcp
+	}
 	out, _ := json.Marshal(seed)
+	return out
+}
+
+// portableMCP drops stdio servers whose command is a macOS-only path — on
+// the Linux VM they would just render as failed servers.
+func portableMCP(servers map[string]json.RawMessage) map[string]json.RawMessage {
+	out := map[string]json.RawMessage{}
+	for name, raw := range servers {
+		var s struct {
+			Command string `json:"command"`
+		}
+		_ = json.Unmarshal(raw, &s)
+		if c := s.Command; strings.HasPrefix(c, "/Applications/") || strings.HasPrefix(c, "/Users/") ||
+			strings.HasPrefix(c, "/opt/homebrew/") || strings.HasPrefix(c, "/System/") {
+			continue
+		}
+		out[name] = raw
+	}
 	return out
 }
 
@@ -447,8 +561,17 @@ func buildFilesTar(dst string, manifest []string, repoRoot string, env map[strin
 			return fmt.Errorf("manifest entry %q is outside $HOME", m)
 		}
 		err = filepath.WalkDir(p, func(path string, e fs.DirEntry, err error) error {
-			if err != nil || e.IsDir() || !e.Type().IsRegular() {
-				return nil // skip missing entries, dirs, symlinks
+			if err != nil {
+				return nil // missing manifest entries are fine
+			}
+			if e.IsDir() {
+				if e.Name() == ".git" { // plugin/marketplace checkouts
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if !e.Type().IsRegular() {
+				return nil // symlinks, sockets
 			}
 			r, _ := filepath.Rel(home, path)
 			info, _ := e.Info()
@@ -459,7 +582,7 @@ func buildFilesTar(dst string, manifest []string, repoRoot string, env map[strin
 		}
 	}
 
-	if seed := claudeSeed(home); seed != nil {
+	if seed := claudeSeed(home, Workspace+"/"+filepath.Base(repoRoot)); seed != nil {
 		if err := tw.WriteHeader(&tar.Header{Name: "home/.claude.json", Mode: 0o600, Size: int64(len(seed))}); err != nil {
 			return err
 		}

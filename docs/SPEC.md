@@ -140,6 +140,14 @@ numbers live in spike/README.md).
    `.pier-setup.sh` runs asynchronously in a background tmux window while you
    type to the agent. (On a stock AMI the bootstrap must wait for cloud-init's
    harness install — minutes, exactly once; bake removes it.)
+3. **Origin-first workspace fetch** — the SSM tunnel moves ~1 MB/s, so the
+   repo avoids it whenever possible. If the base commit is reachable from a
+   GitHub origin ref, the VM fetches straight from GitHub (~100× faster;
+   auth via the GH_TOKEN credential helper — ssh origins are rewritten to
+   https, which also makes push work in sessions). Local-only commits on top
+   of pushed history travel as a thin delta bundle (KBs). The full-history
+   bundle over SSM remains the universal fallback: no origin, non-GitHub
+   host, never-pushed history.
 
 Cut for v1 (numbers didn't justify the moving parts): warm pools, mid-create
 quota polling.
@@ -157,9 +165,14 @@ written back. Sources (wizard-detected, confirmed into the manifest):
   `claude setup-token` during the wizard, injected as an env var in sessions.
   (Foundry/API-key setups need no token: their auth rides in
   `~/.claude/settings.json` with the manifest — the wizard detects this.)
-- a minimal `~/.claude.json` seed (onboarding-done + theme only) so the first
-  `claude` in a fresh session skips the theme picker; history and per-path
-  project trust stay home.
+- a minimal `~/.claude.json` seed: onboarding-done + theme (skips the theme
+  picker), user-scope MCP servers that can run on Linux (auth rides in their
+  env blocks; macOS-binary servers are dropped), and pre-trust for the
+  session workdir so the folder-trust dialog never fires. Codex gets the
+  workdir pre-trusted via a `[projects]` append to its copied config.toml.
+  History and laptop-path project state stay home. MCP servers whose auth
+  lives in the macOS Keychain (OAuth-based remotes) need a one-time re-auth
+  in the session.
 
 ## 9. Setup wizard
 
