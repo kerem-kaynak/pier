@@ -191,7 +191,8 @@ Targets: **create → attached 60–90s; resume → attached ~30s** (measured
 numbers live in spike/README.md).
 
 1. **`pier bake`** — prebaked per-driver image: agent user, tmux, git, gh,
-   docker, make, claude + codex, headless chromium (playwright build + system
+   docker (with compose + buildx — docker.io alone is the bare engine), make,
+   claude + codex, headless chromium (playwright build + system
    deps, for browser MCPs/skills), supervisor preinstalled. ~$1/mo snapshot
    storage. Offered as the wizard's last step; `pier bake` refreshes it.
 2. **Overlapped create** — launch the instance first; build the git bundle +

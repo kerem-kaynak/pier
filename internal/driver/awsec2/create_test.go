@@ -148,6 +148,7 @@ func TestRenderUserDataGuards(t *testing.T) {
 	// Ubuntu 24.04 ships tmux/git/jq/curl, so guarding the apt line on tmux
 	// silently skipped it everywhere (the docker-less-sessions bug).
 	for _, guard := range []string{"command -v docker", "command -v make", "command -v node",
+		"docker compose version", "docker buildx version",
 		"command -v gh", "command -v claude", "command -v codex", "grep -q 'pier/env'"} {
 		if !strings.Contains(ud, guard) {
 			t.Errorf("user-data missing idempotency guard %q", guard)
