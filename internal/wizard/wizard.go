@@ -71,6 +71,11 @@ func Run(newDriver func(config.Config) (driver.Driver, error), printAdminOnly bo
 		}
 	}
 	cfg.AWS.Profile = ask(in, "AWS profile", or(cfg.AWS.Profile, "default"))
+	arn, err := checkIdentity(in, cfg.AWS.Profile)
+	if err != nil {
+		return err
+	}
+	fmt.Println("  ✓ authenticated as", arn)
 	if cfg.AWS.Region == "" {
 		out, _ := exec.Command("aws", "configure", "get", "region", "--profile", cfg.AWS.Profile).Output()
 		cfg.AWS.Region = strings.TrimSpace(string(out))
@@ -108,7 +113,11 @@ func Run(newDriver func(config.Config) (driver.Driver, error), printAdminOnly bo
 	fmt.Println("\ncreating groundwork (IAM role + instance profile + egress-only security group)...")
 	rep, err := drv.SetupOnce(ctx)
 	if err != nil {
-		return fmt.Errorf("%w\n\nno IAM rights? `pier setup --print-admin` prints the commands for your admin", err)
+		// Only blame IAM rights when it actually is a permissions error.
+		if low := strings.ToLower(err.Error()); strings.Contains(low, "accessdenied") || strings.Contains(low, "not authorized") {
+			return fmt.Errorf("%w\n\nno IAM rights? `pier setup --print-admin` prints the commands for your admin", err)
+		}
+		return err
 	}
 	for _, c := range rep.Created {
 		fmt.Println("  + created", c)
@@ -154,6 +163,37 @@ func Run(newDriver func(config.Config) (driver.Driver, error), printAdminOnly bo
 
 	fmt.Println("\ndone — try: cd <some-repo> && pier my-branch")
 	return nil
+}
+
+// checkIdentity fails fast on dead credentials — right after the profile
+// question, not six prompts later at groundwork. It also shows which
+// account/ARN is about to be touched. Expired SSO gets the exact login
+// command and an offer to run it inline.
+func checkIdentity(in *bufio.Reader, profile string) (string, error) {
+	sts := func() (string, error) {
+		out, err := exec.Command("aws", "sts", "get-caller-identity",
+			"--query", "Arn", "--output", "text", "--profile", profile).CombinedOutput()
+		if err != nil {
+			return "", fmt.Errorf("%s", strings.TrimSpace(string(out)))
+		}
+		return strings.TrimSpace(string(out)), nil
+	}
+	arn, err := sts()
+	if err == nil {
+		return arn, nil
+	}
+	if low := strings.ToLower(err.Error()); strings.Contains(low, "sso") && (strings.Contains(low, "expired") || strings.Contains(low, "refresh")) {
+		fmt.Printf("  ✗ the SSO session for profile %q has expired\n", profile)
+		if yes(in, "run `aws sso login --profile "+profile+"` now?", true) {
+			login := exec.Command("aws", "sso", "login", "--profile", profile)
+			login.Stdin, login.Stdout, login.Stderr = os.Stdin, os.Stdout, os.Stderr
+			if login.Run() == nil {
+				return sts()
+			}
+		}
+		return "", fmt.Errorf("profile %q needs `aws sso login --profile %s`, then re-run `pier setup`", profile, profile)
+	}
+	return "", fmt.Errorf("credentials for profile %q aren't working: %w", profile, err)
 }
 
 // detectManifest proposes $HOME-relative agent config worth carrying into
