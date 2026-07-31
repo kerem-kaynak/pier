@@ -291,7 +291,8 @@ runcmd:
     install -d -m 700 -o agent -g agent /home/agent/.ssh
     grep -qxF '{{PUBKEY}}' /home/agent/.ssh/authorized_keys 2>/dev/null || echo '{{PUBKEY}}' >> /home/agent/.ssh/authorized_keys
     chown agent:agent /home/agent/.ssh/authorized_keys && chmod 600 /home/agent/.ssh/authorized_keys
-    command -v tmux >/dev/null || { apt-get update -y && apt-get install -y tmux git curl jq unzip ca-certificates docker.io; }
+    # Guard on packages stock Ubuntu lacks — it already ships tmux/git/jq/curl.
+    { command -v docker && command -v make; } >/dev/null || { apt-get update -y && apt-get install -y tmux git curl jq unzip ca-certificates docker.io make; }
     command -v node >/dev/null || { curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs; }
     command -v gh >/dev/null || { curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /usr/share/keyrings/githubcli-archive-keyring.gpg && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list && apt-get update -y && apt-get install -y gh; }
     command -v claude >/dev/null || npm install -g @anthropic-ai/claude-code

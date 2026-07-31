@@ -144,9 +144,11 @@ func TestRenderUserDataGuards(t *testing.T) {
 		t.Error("supervisor conf not rendered")
 	}
 	// Every install step must be guarded so the same user-data is a fast
-	// no-op on a baked AMI.
-	for _, guard := range []string{"command -v tmux", "command -v node", "command -v gh",
-		"command -v claude", "command -v codex", "grep -q 'pier/env'"} {
+	// no-op on a baked AMI. Guards must test packages the stock image LACKS:
+	// Ubuntu 24.04 ships tmux/git/jq/curl, so guarding the apt line on tmux
+	// silently skipped it everywhere (the docker-less-sessions bug).
+	for _, guard := range []string{"command -v docker", "command -v make", "command -v node",
+		"command -v gh", "command -v claude", "command -v codex", "grep -q 'pier/env'"} {
 		if !strings.Contains(ud, guard) {
 			t.Errorf("user-data missing idempotency guard %q", guard)
 		}

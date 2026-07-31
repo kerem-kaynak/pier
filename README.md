@@ -73,8 +73,8 @@ verified spike numbers: [docs/SPEC.md](docs/SPEC.md), [spike/](spike/).
 A baked create is ~60s: ~30s of EC2 boot, then secrets + bootstrap. When a
 create is much slower than that, it's one of two things:
 
-- **No baked AMI** — a stock image installs node, the harnesses, gh, and
-  docker under cloud-init on every create (minutes). Run `pier bake` once.
+- **No baked AMI** — a stock image installs node, the harnesses, gh, docker,
+  and make under cloud-init on every create (minutes). Run `pier bake` once.
 - **The repo couldn't come from GitHub** — pier then pushes the full git
   history through the SSM tunnel at ~1 MB/s (a 300 MB history ≈ 5 min). The
   create output says which mode you got and why. The fast path needs:
