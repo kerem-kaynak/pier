@@ -198,7 +198,10 @@ func cmdNew(args []string) {
 
 	cfg, drv := loadDriver()
 	repo := repoRoot()
-	ctx := context.Background()
+	// ctrl-c mid-create must cancel the ctx (not just kill the process) so
+	// Create's deferred cleanup can terminate the half-made instance.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	sessions, err := drv.List(ctx)
 	if err != nil {
@@ -232,6 +235,7 @@ func cmdNew(args []string) {
 	if err != nil {
 		fatal(err)
 	}
+	stop() // create done — ctrl-c back to its default for the prompt + attach
 	fmt.Println(ui.OK.Render("session " + sess.Name + " ready"))
 	if detach {
 		fmt.Println(ui.Dim.Render("attach with: pier attach " + sess.Name))
@@ -375,11 +379,18 @@ func enrich(drv driver.Driver, sessions []driver.Session) {
 				return
 			}
 			var st struct {
-				State    string    `json:"state"`
-				Since    time.Time `json:"since"`
-				Strained bool      `json:"strained"`
+				State         string    `json:"state"`
+				Since         time.Time `json:"since"`
+				Bootstrapping bool      `json:"bootstrapping"`
+				Strained      bool      `json:"strained"`
 			}
 			if json.Unmarshal([]byte(out), &st) != nil {
+				return
+			}
+			// Supervisor up but bootstrap not done: the repo is still on its
+			// way (or the create died) — either way, not attachable yet.
+			if st.Bootstrapping {
+				s.State = driver.StateCreating
 				return
 			}
 			switch st.State {

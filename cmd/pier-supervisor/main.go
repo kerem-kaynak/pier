@@ -51,10 +51,14 @@ type status struct {
 	// Listening is every user-relevant TCP port the session listens on
 	// (sshd/resolved excluded) — `pier proxy` mirrors exactly these. Always
 	// present, even empty: its absence means a pre-port-discovery supervisor.
-	Listening []int  `json:"listening"`
-	Tunnels   int    `json:"tunnels,omitempty"` // live forwarded connections
-	Strained  bool   `json:"strained,omitempty"`
-	Reason    string `json:"reason,omitempty"`
+	Listening []int `json:"listening"`
+	Tunnels   int   `json:"tunnels,omitempty"` // live forwarded connections
+	// Bootstrapping is true until the create's bootstrap writes its marker
+	// (repo fetched, tmux up) — ls/TUI keep showing "creating" meanwhile.
+	// omitempty keeps old-session beacons (no marker ever) reading as false.
+	Bootstrapping bool   `json:"bootstrapping,omitempty"`
+	Strained      bool   `json:"strained,omitempty"`
+	Reason        string `json:"reason,omitempty"`
 }
 
 func main() {
@@ -90,6 +94,7 @@ func main() {
 			last = status{State: st, Since: now}
 		}
 		last.Listening, last.Tunnels = listening, tunnels
+		last.Bootstrapping = bootstrapping()
 		last.Strained = strained()
 		writeStatus(last)
 
@@ -171,6 +176,19 @@ func ptyActive() bool {
 		}
 	}
 	return false
+}
+
+// bootstrapping reports whether the create's bootstrap has yet to write its
+// done-marker. New supervisors only ship on sessions whose bootstrap writes
+// it, so a missing marker means "still setting up" (or a create that died —
+// either way, not a session to present as ready).
+func bootstrapping() bool {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+	_, err = os.Stat(filepath.Join(home, ".pier-bootstrapped"))
+	return err != nil
 }
 
 // netSnapshot surveys the session's TCP state in one `ss` pass: which ports

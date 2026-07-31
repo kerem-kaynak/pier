@@ -21,8 +21,10 @@ import (
 // Create: launch first, prep the workspace bundle while the instance boots,
 // push over SSH-over-SSM as soon as sshd answers, bootstrap, done. On a stock
 // AMI the bootstrap waits for cloud-init's harness install (minutes, once);
-// on a baked AMI the whole thing is the boot + push time.
-func (d *Driver) Create(ctx context.Context, spec driver.CreateSpec) (*driver.Session, error) {
+// on a baked AMI the whole thing is the boot + push time. A create that
+// fails after launch destroys its own instance — a session either exists
+// fully set up or not at all, never as a half-made husk in the list.
+func (d *Driver) Create(ctx context.Context, spec driver.CreateSpec) (sess *driver.Session, retErr error) {
 	progress := spec.Progress
 	if progress == nil {
 		progress = func(string) {}
@@ -71,6 +73,17 @@ func (d *Driver) Create(ctx context.Context, spec driver.CreateSpec) (*driver.Se
 	os.Rename(d.keyPath(tmpID), d.keyPath(id))
 	os.Rename(d.keyPath(tmpID)+".pub", d.keyPath(id)+".pub")
 	progress(fmt.Sprintf("launched %s (%s, %s)", id, d.InstanceType, arch))
+	// WithoutCancel: the cleanup must run even when the failure IS the ctx
+	// being cancelled (ctrl-c mid-create).
+	defer func() {
+		if retErr == nil {
+			return
+		}
+		progress("create failed — terminating the half-made instance")
+		if err := d.Destroy(context.WithoutCancel(ctx), id); err != nil {
+			progress("cleanup failed (" + err.Error() + ") — remove it with `pier rm " + spec.Name + "`")
+		}
+	}()
 
 	// Local prep while the instance boots (~30s). The SSM tunnel moves ~1 MB/s,
 	// so ship as little as possible through it: when the base commit is
@@ -147,7 +160,16 @@ func (d *Driver) Create(ctx context.Context, spec driver.CreateSpec) (*driver.Se
 	}
 	for _, p := range pushes { // biggest last: its scp meter is the wait
 		if err := d.scpTo(ctx, id, p.local, p.remote); err != nil {
-			return nil, err
+			if ctx.Err() != nil {
+				return nil, err
+			}
+			// One retry: the SSM tunnel can drop right as the instance
+			// settles ("lost connection" seconds after waitSSH passed).
+			progress("push interrupted — retrying")
+			time.Sleep(2 * time.Second)
+			if err := d.scpTo(ctx, id, p.local, p.remote); err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -394,6 +416,11 @@ tmux has-session -t main 2>/dev/null || tmux new-session -d -s main -e "SSH_AUTH
 if [ -x ./.pier-setup.sh ]; then
   tmux new-window -d -t main -n setup "bash -c 'set -a; . ~/.config/pier/env 2>/dev/null; set +a; cd ~/work/{{REPO}} && ./.pier-setup.sh 2>&1 | tee ~/.pier-setup.log'"
 fi
+
+# Attach gates on this marker: nobody lands in a half-set-up session. Written
+# after the repo checkout and tmux session exist; deliberately NOT after
+# .pier-setup.sh, which runs async in its tmux window.
+touch "$HOME/.pier-bootstrapped"
 
 rm -f /tmp/pier.bundle /tmp/pier-files.tar /tmp/pier-supervisor /tmp/pier-bootstrap.sh
 echo bootstrapped

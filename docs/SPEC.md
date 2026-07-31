@@ -138,6 +138,20 @@ The beacon additionally lists the session's listening TCP ports (one
 `sudo ss -Htnap` pass; sshd and systemd-resolved excluded) — this is how
 `pier proxy` knows what to mirror without the user declaring anything.
 
+A session either exists fully set up or not at all — no half-states:
+
+- Bootstrap's **last act** is writing `~/.pier-bootstrapped` (after the repo
+  checkout and tmux session, before the async `.pier-setup.sh` finishes).
+  Attach gates on the marker: attaching mid-create waits with feedback
+  instead of dropping into an empty $HOME — which would also steal the
+  `main` tmux session away from its workdir. The beacon carries a
+  `bootstrapping` flag meanwhile, so ls/TUI keep showing `creating` until
+  the repo is actually there (the supervisor starts early on purpose: even
+  a half-made instance parks itself).
+- A create that fails after launch **destroys its own instance** (ctrl-c
+  included — the cleanup runs on a cancel-immune context). Transient scp
+  drops right after boot get one retry first.
+
 ### 6.1 Hostnames: `pier proxy`
 
 `pier proxy` (foreground, ctrl-c to stop) gives every **running** session its
@@ -274,7 +288,7 @@ shows headroom (e.g. `12/32 vCPU`).
 
 ```
 pier                    TUI: list / attach / new / delete / pin (new = background create,
-                        listed as "creating" until the bootstrap beacon appears)
+                        listed as "creating" until bootstrap writes its done-marker)
 pier <branch> [base]    create from cwd repo (branch off base, default HEAD) and attach
 pier ls                 list own sessions
 pier attach <match>     reattach; resumes if parked

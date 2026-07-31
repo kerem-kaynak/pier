@@ -229,9 +229,19 @@ func (d *Driver) Destroy(ctx context.Context, id string) error {
 // socket path, while long-lived tmux panes hold the old one — bashrc points
 // them at the symlink instead, so `git push` over ssh keeps working across
 // re-attaches. Keys never leave the laptop; detached sessions can't use them.
+//
+// It also gates on the bootstrap marker: attaching mid-create would land in
+// an empty $HOME (no repo yet) and steal the `main` tmux session away from
+// its workdir — so we wait, with feedback, until bootstrap's last act.
 func (d *Driver) AttachCommand(ctx context.Context, id string) (*exec.Cmd, error) {
-	args := append(d.sshOpts(id), "-t", "-o", "ForwardAgent=yes", "agent@"+id,
-		`[ -S "$SSH_AUTH_SOCK" ] && ln -sf "$SSH_AUTH_SOCK" ~/.ssh/agent.sock; tmux new-session -A -s main`)
+	const remote = `[ -S "$SSH_AUTH_SOCK" ] && ln -sf "$SSH_AUTH_SOCK" ~/.ssh/agent.sock
+w=0; until [ -e "$HOME/.pier-bootstrapped" ]; do
+  [ "$w" -eq 0 ] && echo "setup is still running (secrets + repo on their way) — dropping you in when it finishes"
+  w=$((w+1)); [ "$w" -gt 450 ] && { echo "pier: setup never finished — the create likely failed; recreate the session" >&2; exit 1; }
+  sleep 2
+done
+exec tmux new-session -A -s main`
+	args := append(d.sshOpts(id), "-t", "-o", "ForwardAgent=yes", "agent@"+id, remote)
 	cmd := exec.CommandContext(ctx, "ssh", args...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	return cmd, nil
