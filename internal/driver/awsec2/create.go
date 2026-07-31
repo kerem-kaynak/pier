@@ -381,6 +381,30 @@ func gitBundle(repo, ref, dst string) error {
 	return nil
 }
 
+// claudeSeed builds a minimal ~/.claude.json for the VM — just the laptop's
+// theme + onboarding-done flag, so a fresh session's first `claude` skips the
+// theme picker. The rest of the local state file (history, per-path project
+// trust) is laptop-specific noise and deliberately stays home.
+func claudeSeed(home string) []byte {
+	b, err := os.ReadFile(filepath.Join(home, ".claude.json"))
+	if err != nil {
+		return nil
+	}
+	var local struct {
+		Theme                  string `json:"theme"`
+		HasCompletedOnboarding bool   `json:"hasCompletedOnboarding"`
+	}
+	if json.Unmarshal(b, &local) != nil || !local.HasCompletedOnboarding {
+		return nil
+	}
+	seed := map[string]any{"hasCompletedOnboarding": true}
+	if local.Theme != "" {
+		seed["theme"] = local.Theme
+	}
+	out, _ := json.Marshal(seed)
+	return out
+}
+
 // buildFilesTar packs, into one tar: manifest files/dirs under $HOME (prefix
 // home/), repo-local .env* (prefix repo/), and a generated home/.config/pier/env
 // with the session tokens. The bootstrap extracts the two prefixes to the
@@ -427,6 +451,15 @@ func buildFilesTar(dst string, manifest []string, repoRoot string, env map[strin
 			return addFile(path, "home/"+r, info.Mode())
 		})
 		if err != nil {
+			return err
+		}
+	}
+
+	if seed := claudeSeed(home); seed != nil {
+		if err := tw.WriteHeader(&tar.Header{Name: "home/.claude.json", Mode: 0o600, Size: int64(len(seed))}); err != nil {
+			return err
+		}
+		if _, err := tw.Write(seed); err != nil {
 			return err
 		}
 	}

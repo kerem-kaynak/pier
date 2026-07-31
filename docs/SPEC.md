@@ -155,6 +155,11 @@ written back. Sources (wizard-detected, confirmed into the manifest):
 - gh token (`gh auth token`) for git push/PRs
 - Claude subscription auth on macOS lives in the Keychain → one-time
   `claude setup-token` during the wizard, injected as an env var in sessions.
+  (Foundry/API-key setups need no token: their auth rides in
+  `~/.claude/settings.json` with the manifest — the wizard detects this.)
+- a minimal `~/.claude.json` seed (onboarding-done + theme only) so the first
+  `claude` in a fresh session skips the theme picker; history and per-path
+  project trust stay home.
 
 ## 9. Setup wizard
 

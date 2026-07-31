@@ -1,6 +1,8 @@
 package awsec2
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -27,6 +29,30 @@ func TestDurConf(t *testing.T) {
 	}
 	if got := durConf(30 * time.Minute); got != "30m0s" {
 		t.Errorf("durConf(30m) = %q, want 30m0s", got)
+	}
+}
+
+func TestClaudeSeed(t *testing.T) {
+	home := t.TempDir()
+	if got := claudeSeed(home); got != nil {
+		t.Errorf("no local .claude.json should seed nothing, got %s", got)
+	}
+	write := func(s string) {
+		if err := os.WriteFile(filepath.Join(home, ".claude.json"), []byte(s), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(`{"hasCompletedOnboarding":false,"theme":"dark"}`)
+	if got := claudeSeed(home); got != nil {
+		t.Errorf("incomplete onboarding should seed nothing, got %s", got)
+	}
+	write(`{"hasCompletedOnboarding":true,"theme":"dark","projects":{"/Users/x":{}},"oauthAccount":{"x":1}}`)
+	got := string(claudeSeed(home))
+	if !strings.Contains(got, `"hasCompletedOnboarding":true`) || !strings.Contains(got, `"theme":"dark"`) {
+		t.Errorf("seed missing onboarding/theme: %s", got)
+	}
+	if strings.Contains(got, "projects") || strings.Contains(got, "oauthAccount") {
+		t.Errorf("seed must not carry laptop state: %s", got)
 	}
 }
 
