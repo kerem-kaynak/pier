@@ -151,7 +151,9 @@ only `Driver.SSHTarget` (the raw ssh recipe) and the beacon's port list.
   VPNs use, honored by browsers and getaddrinfo alike. AAAA/HTTPS queries
   get NOERROR-empty (never NXDOMAIN, which would negative-cache the name).
 - **IPs**: each session gets a stable private loopback IP (127.94.0.101+,
-  32 slots; the resolver sits on 127.94.0.53:53). macOS needs `ifconfig lo0
+  32 slots; the resolver sits on 127.94.0.53:5533 — a high port plus a `port`
+  directive in the resolver file, because macOS lets unprivileged processes
+  bind low ports only on the wildcard address). macOS needs `ifconfig lo0
   alias` per IP — the one sudo, disclosed before it runs; aliases are inert
   /32s that vanish at reboot. Per-session IPs are what let two sessions both
   serve :3000 without colliding — pier's most normal situation.

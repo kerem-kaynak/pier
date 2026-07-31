@@ -23,6 +23,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -36,6 +37,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/kerem-kaynak/pier/internal/driver"
@@ -43,9 +45,13 @@ import (
 )
 
 const (
-	domain    = "pier"        // sessions resolve as <name>.pier
-	dnsAddr   = "127.94.0.53" // the resolver's own loopback alias
-	slotBase  = 101           // session IPs: 127.94.0.101 .. +slotCount-1
+	domain  = "pier"        // sessions resolve as <name>.pier
+	dnsAddr = "127.94.0.53" // the resolver's own loopback alias
+	// Not :53 — macOS lets unprivileged processes bind low ports only on the
+	// wildcard address, never a specific IP. The resolver file's `port`
+	// directive points mDNSResponder here instead.
+	dnsPort   = "5533"
+	slotBase  = 101 // session IPs: 127.94.0.101 .. +slotCount-1
 	slotCount = 32
 
 	listEvery  = 15 * time.Second // session-set refresh (cloud API call)
@@ -72,9 +78,13 @@ func Run(ctx context.Context, drv driver.Driver, opt Options) error {
 		return err
 	}
 	names := &table{m: map[string]net.IP{}}
-	dns, err := serveDNS(net.JoinHostPort(dnsAddr, "53"), names.lookup)
+	dns, err := serveDNS(net.JoinHostPort(dnsAddr, dnsPort), names.lookup)
 	if err != nil {
-		return fmt.Errorf("dns on %s:53: %w — is another pier proxy running?", dnsAddr, err)
+		hint := ""
+		if errors.Is(err, syscall.EADDRINUSE) {
+			hint = " — is another pier proxy running?"
+		}
+		return fmt.Errorf("dns: %w%s", err, hint)
 	}
 	defer dns.Close()
 	fmt.Fprintln(opt.Out, ui.Bold.Render("proxy up")+ui.Dim.Render(" — running sessions resolve as <session>."+domain+"; ctrl-c to stop"))

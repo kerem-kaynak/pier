@@ -14,8 +14,9 @@ import (
 // and full disclosure of what runs:
 //
 //   - /etc/resolver/pier — tells macOS to send *.pier lookups to our
-//     resolver (the same split-DNS mechanism VPNs and Tailscale use).
-//     Written once, survives everything.
+//     resolver (the same split-DNS mechanism VPNs and Tailscale use). The
+//     port directive points it at our unprivileged high port. Written once,
+//     survives everything; rewritten only if the content is stale.
 //   - loopback aliases for 127.94.0.x — macOS only answers 127.0.0.1 out of
 //     the box; each session's IP (and the resolver's) must be added to lo0.
 //     Inert /32s, gone at reboot, re-added by the next run.
@@ -23,9 +24,10 @@ import (
 // Everything else the proxy does is unprivileged and dies with the process.
 func ensureNet(out io.Writer) error {
 	var steps []string
-	content := "nameserver " + dnsAddr + "\ntimeout 1\n"
+	content := "nameserver " + dnsAddr + "\nport " + dnsPort + "\ntimeout 1\n"
 	if b, err := os.ReadFile("/etc/resolver/" + domain); err != nil || string(b) != content {
-		steps = append(steps, "mkdir -p /etc/resolver && printf 'nameserver "+dnsAddr+"\\ntimeout 1\\n' > /etc/resolver/"+domain)
+		esc := strings.ReplaceAll(content, "\n", `\n`)
+		steps = append(steps, "mkdir -p /etc/resolver && printf '"+esc+"' > /etc/resolver/"+domain)
 	}
 	have := lo0Aliases()
 	var missing []string
