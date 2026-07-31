@@ -95,14 +95,18 @@ func (d *Driver) Create(ctx context.Context, spec driver.CreateSpec) (*driver.Se
 		return nil, err
 	}
 
-	progress("pushing workspace")
-	for local, remote := range map[string]string{
-		bundle:   "/tmp/pier.bundle",
-		filesTar: "/tmp/pier-files.tar",
-		supPath:  "/tmp/pier-supervisor",
-		bootPath: "/tmp/pier-bootstrap.sh",
+	var bundleMB float64
+	if fi, err := os.Stat(bundle); err == nil {
+		bundleMB = float64(fi.Size()) / 1e6
+	}
+	progress(fmt.Sprintf("pushing workspace (%.0f MB)", bundleMB))
+	for _, p := range []struct{ local, remote string }{
+		{supPath, "/tmp/pier-supervisor"},
+		{bootPath, "/tmp/pier-bootstrap.sh"},
+		{filesTar, "/tmp/pier-files.tar"},
+		{bundle, "/tmp/pier.bundle"}, // biggest last: its scp meter is the wait
 	} {
-		if err := d.scpTo(ctx, id, local, remote); err != nil {
+		if err := d.scpTo(ctx, id, p.local, p.remote); err != nil {
 			return nil, err
 		}
 	}

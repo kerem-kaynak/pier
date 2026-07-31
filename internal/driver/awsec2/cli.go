@@ -57,6 +57,10 @@ func (d *Driver) sshOpts(id string) []string {
 		"-o", "BatchMode=yes",
 		"-o", "LogLevel=ERROR",
 		"-o", "ConnectTimeout=10",
+		// A dead SSM tunnel otherwise hangs transfers forever: probe every
+		// 15s, give up after 4 misses (~60s).
+		"-o", "ServerAliveInterval=15",
+		"-o", "ServerAliveCountMax=4",
 	}
 }
 
@@ -71,9 +75,15 @@ func (d *Driver) sshRun(ctx context.Context, id, script string) (string, error) 
 
 func (d *Driver) scpTo(ctx context.Context, id, local, remote string) error {
 	args := append(d.sshOpts(id), local, "agent@"+id+":"+remote)
-	out, err := exec.CommandContext(ctx, "scp", args...).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("scp %s -> %s: %s", local, id, strings.TrimSpace(string(out)))
+	cmd := exec.CommandContext(ctx, "scp", args...)
+	// scp draws its progress meter only when stdout is a terminal — so big
+	// pushes (the repo bundle) show live progress interactively and stay
+	// silent when piped.
+	cmd.Stdout = os.Stdout
+	var errb bytes.Buffer
+	cmd.Stderr = &errb
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("scp %s -> %s: %s", local, id, strings.TrimSpace(errb.String()))
 	}
 	return nil
 }
