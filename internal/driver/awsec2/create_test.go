@@ -75,7 +75,7 @@ func TestClaudeSeed(t *testing.T) {
 
 func TestOauthRemotes(t *testing.T) {
 	home := t.TempDir()
-	if got := oauthRemotes(home, "/Users/x/repo"); got != nil {
+	if got := OAuthRemotes(home, "/Users/x/repo"); got != nil {
 		t.Errorf("no config should list nothing, got %v", got)
 	}
 	cfg := `{"mcpServers":{
@@ -87,7 +87,7 @@ func TestOauthRemotes(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(home, ".claude.json"), []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	got := oauthRemotes(home, "/Users/x/repo")
+	got := OAuthRemotes(home, "/Users/x/repo")
 	if want := []string{"lin", "notion"}; !slices.Equal(got, want) {
 		t.Errorf("oauthRemotes = %v, want %v (header-auth'd and stdio servers excluded)", got, want)
 	}

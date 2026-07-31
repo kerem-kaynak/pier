@@ -142,8 +142,8 @@ func (d *Driver) Create(ctx context.Context, spec driver.CreateSpec) (*driver.Se
 		pushes = append(pushes, struct{ local, remote string }{bundle, "/tmp/pier.bundle"})
 	}
 	home, _ := os.UserHomeDir()
-	if names := oauthRemotes(home, spec.Repo); len(names) > 0 {
-		progress("mcp " + strings.Join(names, ", ") + ": one-time oauth — `pier mcp login " + spec.Name + " <server>` when it's up")
+	if names := OAuthRemotes(home, spec.Repo); len(names) > 0 {
+		progress("mcp " + strings.Join(names, ", ") + ": one-time oauth — `pier mcp login " + spec.Name + "` when it's up")
 	}
 	for _, p := range pushes { // biggest last: its scp meter is the wait
 		if err := d.scpTo(ctx, id, p.local, p.remote); err != nil {
@@ -296,6 +296,8 @@ runcmd:
     command -v gh >/dev/null || { curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /usr/share/keyrings/githubcli-archive-keyring.gpg && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list && apt-get update -y && apt-get install -y gh; }
     command -v claude >/dev/null || npm install -g @anthropic-ai/claude-code
     command -v codex >/dev/null || npm install -g @openai/codex
+    # Headless chromium for browser MCPs/skills (playwright cache + shared libs).
+    [ -e /home/agent/.cache/ms-playwright ] || { npx -y playwright install-deps chromium && sudo -Hu agent npx -y playwright install chromium; }
     getent group docker >/dev/null && usermod -aG docker agent
     grep -q 'pier/env' /home/agent/.bashrc || printf '\n[ -f ~/.config/pier/env ] && set -a && . ~/.config/pier/env && set +a\n[ -S ~/.ssh/agent.sock ] && export SSH_AUTH_SOCK=~/.ssh/agent.sock\ncd ~/work/* 2>/dev/null || true\n' >> /home/agent/.bashrc
 `
@@ -612,16 +614,23 @@ func claudeSeed(home, srcRepo, workdir string) []byte {
 	return out
 }
 
-// oauthRemotes names the seeded remote MCP servers with no static auth
+// OAuthRemotes names the seeded remote MCP servers with no static auth
 // header. Their OAuth tokens live in the OS keychain and rotate on refresh,
 // so copying them would let two machines revoke each other — each session
-// instead needs one `claude mcp login <name>`. Static-auth servers (env
+// instead needs one `pier mcp login <name>` round. Static-auth servers (env
 // blocks, Authorization headers) travel whole and never appear here.
-func oauthRemotes(home, srcRepo string) []string {
+func OAuthRemotes(home, srcRepo string) []string {
 	b, err := os.ReadFile(filepath.Join(home, ".claude.json"))
 	if err != nil {
 		return nil
 	}
+	return OAuthRemoteNames(b, srcRepo)
+}
+
+// OAuthRemoteNames is the pure parser behind OAuthRemotes: it reads any
+// ~/.claude.json bytes (laptop or session — pass the matching project dir),
+// so the CLI can ask a running session what still needs a browser approval.
+func OAuthRemoteNames(b []byte, projectDir string) []string {
 	var local struct {
 		McpServers map[string]json.RawMessage `json:"mcpServers"`
 		Projects   map[string]struct {
@@ -632,7 +641,7 @@ func oauthRemotes(home, srcRepo string) []string {
 		return nil
 	}
 	set := map[string]bool{}
-	for _, servers := range []map[string]json.RawMessage{local.McpServers, local.Projects[srcRepo].McpServers} {
+	for _, servers := range []map[string]json.RawMessage{local.McpServers, local.Projects[projectDir].McpServers} {
 		for name, raw := range servers {
 			var s struct {
 				Type    string            `json:"type"`

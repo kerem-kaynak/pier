@@ -13,8 +13,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"text/tabwriter"
 	"time"
 
@@ -48,8 +50,10 @@ usage:
       --no-park               shorthand for --idle never
   pier ls                   list sessions
   pier attach <session>     attach (auto-resumes if parked)
-  pier mcp login <session> [server]   one-time OAuth for an MCP server in the session
-                            (no server: list the session's MCP servers + status)
+  pier mcp login <session>  authenticate every MCP server that still needs it
+                            (one browser approval each; add a server name to redo one)
+  pier port <session> <port> [port...]  forward ports until ctrl-c
+                            (3000 = same both sides, 8080:3000 = local:session)
   pier rm <session> [-f]    destroy session and its disk
   pier keep <session>       pin: disable idle self-park
   pier resize <session> <type>  grow/shrink the VM (running: ~40s park+resume; same arch only)
@@ -73,6 +77,8 @@ func main() {
 		cmdAttach(args[1:])
 	case "mcp":
 		cmdMCP(args[1:])
+	case "port":
+		cmdPort(args[1:])
 	case "rm":
 		cmdRM(args[1:])
 	case "keep":
@@ -225,7 +231,22 @@ func cmdNew(args []string) {
 		fmt.Println(ui.Dim.Render("attach with: pier attach " + sess.Name))
 		return
 	}
+	// OAuth-backed MCPs need one browser approval each (tokens can't be
+	// copied — they rotate); offer the sweep now, while a human is present.
+	home, _ := os.UserHomeDir()
+	if names := awsec2.OAuthRemotes(home, repo); len(names) > 0 && stdinIsTTY() {
+		if confirm(fmt.Sprintf("mcp %s: run the one-time browser logins now?", strings.Join(names, ", ")), true) {
+			loginAll(drv, *sess)
+		} else {
+			fmt.Println(ui.Dim.Render("later: pier mcp login " + sess.Name))
+		}
+	}
 	attach(drv, sess.ID)
+}
+
+func stdinIsTTY() bool {
+	fi, err := os.Stdin.Stat()
+	return err == nil && fi.Mode()&os.ModeCharDevice != 0
 }
 
 func or(a, b string) string {
@@ -301,8 +322,14 @@ func enrich(drv driver.Driver, sessions []driver.Session) {
 			defer wg.Done()
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			out, err := drv.Exec(ctx, s.ID, "cat /run/pier/status.json 2>/dev/null")
+			out, err := drv.Exec(ctx, s.ID, "cat /run/pier/status.json 2>/dev/null || echo absent")
 			if err != nil {
+				return // unreachable (booting, ssm blip) — keep plain "running"
+			}
+			if strings.TrimSpace(out) == "absent" {
+				// Instance up but no supervisor beacon yet: the create's
+				// bootstrap is still running (push, harness wait, setup).
+				s.State = driver.StateCreating
 				return
 			}
 			var st struct {
@@ -391,43 +418,136 @@ var mcpServerName = regexp.MustCompile(`^[A-Za-z0-9._:@-]+$`)
 // (they rotate; two machines sharing one revoke each other). The callback
 // port rides the existing SSM tunnel, so the browser approval on the laptop
 // completes the flow inside the VM: click, approve, done — no URL copying.
+// Without a server name it sweeps everything still unauthenticated.
 func cmdMCP(args []string) {
 	if len(args) < 2 || args[0] != "login" {
 		fatal(fmt.Errorf("usage: pier mcp login <session> [server]"))
 	}
-	ctx := context.Background()
 	_, drv := loadDriver()
 	s := match(drv, args[1])
 	resumeIfParked(drv, s)
 
-	if len(args) == 2 { // no server named: show what the session has
-		fmt.Println(ui.Dim.Render("  asking the session for its MCP servers..."))
-		out, err := drv.Exec(ctx, s.ID, "claude mcp list 2>&1 || true")
-		if err != nil {
-			fatal(err)
-		}
-		fmt.Println(out)
-		fmt.Println("\nauthenticate one with " + ui.Accent.Render("pier mcp login "+s.Name+" <server>"))
+	if len(args) == 2 {
+		loginAll(drv, s)
 		return
 	}
 	server := args[2]
 	if !mcpServerName.MatchString(server) {
 		fatal(fmt.Errorf("implausible server name %q", server))
 	}
-	port, err := freePort()
+	if err := loginOne(drv, s, server); err != nil {
+		fatal(fmt.Errorf("mcp login: %w", err))
+	}
+}
+
+// loginAll asks the session which OAuth-backed MCP servers still lack a
+// token (seeded ~/.claude.json minus ~/.claude/.credentials.json) and runs
+// the browser flow for each, sequentially — one command, N approvals, and
+// re-running it is free: already-authenticated servers are skipped.
+func loginAll(drv driver.Driver, s driver.Session) {
+	out, err := drv.Exec(context.Background(), s.ID,
+		"cat ~/.claude.json 2>/dev/null; printf '\\n---PIER-SPLIT---\\n'; cat ~/.claude/.credentials.json 2>/dev/null")
 	if err != nil {
 		fatal(err)
 	}
-	fmt.Println("  " + ui.Bold.Render("authenticating "+server) +
-		ui.Dim.Render(" — open the URL below in your browser and approve"))
-	fmt.Println(ui.Dim.Render("  the callback tunnels back into the session; the token lives on its disk across park/resume"))
-	cmd, err := drv.MCPLoginCommand(ctx, s.ID, server, port)
+	cfgRaw, credRaw, _ := strings.Cut(out, "---PIER-SPLIT---")
+	var pending []string
+	for _, n := range awsec2.OAuthRemoteNames([]byte(cfgRaw), awsec2.Workspace+"/"+s.Repo) {
+		if !mcpAuthed(credRaw, n) {
+			pending = append(pending, n)
+		}
+	}
+	if len(pending) == 0 {
+		fmt.Println(ui.OK.Render("✓") + " every MCP server in " + s.Name + " is authenticated")
+		return
+	}
+	fmt.Printf("%s %s\n", ui.Bold.Render(fmt.Sprintf("%d server(s) need a one-time browser approval:", len(pending))),
+		strings.Join(pending, ", "))
+	for i, server := range pending {
+		fmt.Printf("\n%s %s\n", ui.Accent.Render(fmt.Sprintf("[%d/%d]", i+1, len(pending))), ui.Bold.Render(server))
+		if err := loginOne(drv, s, server); err != nil {
+			fmt.Fprintln(os.Stderr, ui.Warn.Render("  ! "+server+" didn't finish — retry later with `pier mcp login "+s.Name+" "+server+"`"))
+		}
+	}
+}
+
+func loginOne(drv driver.Driver, s driver.Session, server string) error {
+	port, err := freePort()
+	if err != nil {
+		return err
+	}
+	fmt.Println(ui.Dim.Render("  open the URL below and approve — the callback tunnels into the session; the token survives park/resume"))
+	cmd, err := drv.MCPLoginCommand(context.Background(), s.ID, server, port)
+	if err != nil {
+		return err
+	}
+	return cmd.Run()
+}
+
+// mcpAuthed checks the session's credential store for a token under this
+// server. Claude keys mcpOAuth by server name (possibly suffixed); an
+// unrecognized format fails open — worst case one redundant approval.
+func mcpAuthed(credJSON, server string) bool {
+	var c struct {
+		McpOAuth map[string]json.RawMessage `json:"mcpOAuth"`
+	}
+	if json.Unmarshal([]byte(credJSON), &c) != nil {
+		return false
+	}
+	for k := range c.McpOAuth {
+		if k == server || strings.HasPrefix(k, server+"|") || strings.HasPrefix(k, server+":") {
+			return true
+		}
+	}
+	return false
+}
+
+// cmdPort: `pier port <session> <port> [port...]` — hold ssh -L forwards open
+// so the laptop reaches services inside the session: the dev server in your
+// browser, the database in your local psql. "8080:3000" maps local:session.
+func cmdPort(args []string) {
+	if len(args) < 2 {
+		fatal(fmt.Errorf("usage: pier port <session> <port> [port...]   (3000, or local:session like 8080:3000)"))
+	}
+	_, drv := loadDriver()
+	s := match(drv, args[0])
+	var pairs [][2]int
+	for _, a := range args[1:] {
+		p, err := parsePortPair(a)
+		if err != nil {
+			fatal(err)
+		}
+		pairs = append(pairs, p)
+	}
+	resumeIfParked(drv, s)
+	for _, p := range pairs {
+		fmt.Printf("  %s -> %s\n", ui.Bold.Render(fmt.Sprintf("localhost:%d", p[0])),
+			ui.Dim.Render(fmt.Sprintf("%s:%d", s.Name, p[1])))
+	}
+	fmt.Println(ui.Dim.Render("  forwarding — ctrl-c to stop"))
+	cmd, err := drv.PortForwardCommand(context.Background(), s.ID, pairs)
 	if err != nil {
 		fatal(err)
 	}
 	if err := cmd.Run(); err != nil {
-		fatal(fmt.Errorf("mcp login: %w", err))
+		fatal(fmt.Errorf("port forward: %w", err))
 	}
+}
+
+func parsePortPair(s string) ([2]int, error) {
+	local, remote, split := strings.Cut(s, ":")
+	if !split {
+		remote = local
+	}
+	var p [2]int
+	for i, v := range []string{local, remote} {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 65535 {
+			return p, fmt.Errorf("bad port %q — want 3000 or local:session like 8080:3000", s)
+		}
+		p[i] = n
+	}
+	return p, nil
 }
 
 // freePort grabs an OS-assigned port. Local and remote must match: the OAuth
@@ -622,6 +742,7 @@ func cmdTUI() {
 		Pin: func(s driver.Session) error {
 			return pin(drv, s)
 		},
+		CreateDetached: spawnCreate,
 	})
 	if err != nil {
 		fatal(err)
@@ -633,4 +754,36 @@ func cmdTUI() {
 	case tui.ActionNew:
 		cmdNew([]string{action.Branch})
 	}
+}
+
+// spawnCreate re-execs `pier <branch> --detach` as a detached child (own
+// session, output to a log file), so a TUI-initiated create runs in the
+// background and survives the TUI closing. The list shows it as "creating"
+// until the bootstrap finishes and the supervisor beacon appears.
+func spawnCreate(branch string) (string, error) {
+	if err := exec.Command("git", "rev-parse", "--show-toplevel").Run(); err != nil {
+		return "", fmt.Errorf("not inside a git repository — run pier from the repo to fork")
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	logDir := filepath.Join(config.Dir(), "logs")
+	if err := os.MkdirAll(logDir, 0o700); err != nil {
+		return "", err
+	}
+	logPath := filepath.Join(logDir, "create-"+strings.ReplaceAll(branch, "/", "-")+".log")
+	f, err := os.Create(logPath)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	cmd := exec.Command(exe, branch, "--detach")
+	cmd.Stdout, cmd.Stderr = f, f
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		return "", err
+	}
+	go cmd.Wait() // reap if the TUI outlives the create
+	return logPath, nil
 }

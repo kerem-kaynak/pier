@@ -104,6 +104,11 @@ type Driver interface {
 	// browser-based MCP auth completes with one approval — no URL copying.
 	MCPLoginCommand(ctx context.Context, id, server string, port int) (*exec.Cmd, error)
 
+	// PortForwardCommand holds local→session port forwards open until the
+	// process is interrupted: the app in the session on your laptop's
+	// browser, its database in your local psql. pairs are {local, remote}.
+	PortForwardCommand(ctx context.Context, id string, pairs [][2]int) (*exec.Cmd, error)
+
 	// Exec runs a one-shot command (status reads, push bootstrap) without a TTY.
 	Exec(ctx context.Context, id string, command string) (string, error)
 

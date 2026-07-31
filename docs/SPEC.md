@@ -133,7 +133,8 @@ Targets: **create → attached 60–90s; resume → attached ~30s** (measured
 numbers live in spike/README.md).
 
 1. **`pier bake`** — prebaked per-driver image: agent user, tmux, git, gh,
-   docker, mise, claude + codex, supervisor preinstalled. ~$1/mo snapshot
+   docker, mise, claude + codex, headless chromium (playwright build + system
+   deps, for browser MCPs/skills), supervisor preinstalled. ~$1/mo snapshot
    storage. Offered as the wizard's last step; `pier bake` refreshes it.
 2. **Overlapped create** — launch the instance first; build the git bundle +
    secrets tar while it boots; push and bootstrap the moment sshd answers;
@@ -187,12 +188,15 @@ written back. Sources (wizard-detected, confirmed into the manifest):
   stay home. MCP servers whose auth lives in the macOS Keychain (OAuth-based
   remotes) carry their declaration but not their tokens — they rotate on
   refresh, so copying them would let two machines revoke each other. Instead:
-  `pier mcp login <session> <server>` runs `claude mcp login` in the VM with
-  the OAuth callback port forwarded through the SSM tunnel — one browser
-  approval on the laptop completes the flow inside the session, token
-  persists on its disk across park/resume. Create lists the affected
-  servers. (Remotes that accept static keys can be declared locally with an
-  `Authorization` header, which travels whole — zero approvals.)
+  `pier mcp login <session>` asks the session which servers still lack a
+  token (seeded config minus its credential store) and runs `claude mcp
+  login` for each, sequentially, with the OAuth callback port forwarded
+  through the SSM tunnel — one browser approval per server on the laptop
+  completes each flow inside the session; tokens persist on its disk across
+  park/resume, and re-runs skip what's done. The interactive create offers
+  this sweep right before the first attach. (Remotes that accept static keys
+  can be declared locally with an `Authorization` header, which travels
+  whole — zero approvals.)
 
 ## 9. Setup wizard
 
@@ -225,11 +229,14 @@ shows headroom (e.g. `12/32 vCPU`).
 ## 11. CLI
 
 ```
-pier                    TUI: list / attach / new / delete / pin
+pier                    TUI: list / attach / new / delete / pin (new = background create,
+                        listed as "creating" until the bootstrap beacon appears)
 pier <branch> [base]    create from cwd repo (branch off base, default HEAD) and attach
 pier ls                 list own sessions
 pier attach <match>     reattach; resumes if parked
-pier mcp login <match> [server]  one-time OAuth for a session's MCP server (callback rides the tunnel)
+pier mcp login <match> [server]  browser-auth every MCP server that still needs it, sequentially
+                        (callback rides the tunnel; server arg = redo just that one)
+pier port <match> <p> [p...]  hold local→session port forwards open (3000 or local:remote 8080:3000)
 pier rm <match>         destroy (instance + disk)
 pier keep <match>       disable auto-park for a session
 pier resize <match> <type>  change VM size (running: park→modify→resume; same arch)

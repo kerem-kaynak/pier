@@ -45,10 +45,18 @@ verified spike numbers: [docs/SPEC.md](docs/SPEC.md), [spike/](spike/).
 - MCP servers, agents, skills, and plugins travel with their config — auth
   included when it's static (env vars, API-key headers). OAuth-backed remote
   MCPs keep rotating tokens in the OS keychain, which can't be copied (two
-  machines sharing one revoke each other) — those get **one browser approval
-  per session**: `pier mcp login <session> <server>` runs the flow through
-  the session's tunnel, so you click the printed URL, approve, done. The
-  create output lists exactly which servers need it.
+  machines sharing one revoke each other) — those need **one browser approval
+  each, once per session lifetime**. Creating a session offers to run them
+  on the spot; `pier mcp login <session>` sweeps whatever still needs auth
+  later (done servers are skipped — no server names to remember).
+- Headless Chromium is in the image (playwright's build plus its system
+  libraries), so browser MCPs and skills — playwright, screenshots, web
+  automation — work out of the box. Agents drive it headless; it's a server.
+- `pier port <session> 3000 5432` holds port forwards open through the
+  tunnel: the session's dev server in your local browser, its database in
+  your local psql. `8080:3000` maps local:session; ctrl-c stops.
+- Creating from the TUI doesn't block: the session builds in the background
+  and sits in the list as `creating` until its bootstrap finishes.
 - If the repo has a `.pier-setup.sh`, it runs asynchronously in a tmux window
   on first boot (deps, migrations, seeds).
 

@@ -256,6 +256,20 @@ func (d *Driver) MCPLoginCommand(ctx context.Context, id, server string, port in
 	return cmd, nil
 }
 
+// PortForwardCommand: plain ssh -L forwards over the SSM tunnel, -N so no
+// remote shell is taken. Runs until interrupted; ~1 MB/s tunnel throughput —
+// plenty for dev browsing and database queries.
+func (d *Driver) PortForwardCommand(ctx context.Context, id string, pairs [][2]int) (*exec.Cmd, error) {
+	args := d.sshOpts(id)
+	for _, p := range pairs {
+		args = append(args, "-L", fmt.Sprintf("%d:localhost:%d", p[0], p[1]))
+	}
+	args = append(args, "-N", "agent@"+id)
+	cmd := exec.CommandContext(ctx, "ssh", args...)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	return cmd, nil
+}
+
 func (d *Driver) Exec(ctx context.Context, id string, command string) (string, error) {
 	return d.sshRun(ctx, id, command)
 }

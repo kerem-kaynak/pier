@@ -22,6 +22,10 @@ type Options struct {
 	Fetch      func() ([]driver.Session, error)
 	Destroy    func(driver.Session) error
 	Pin        func(driver.Session) error
+	// CreateDetached starts a background create and returns its log path;
+	// the TUI stays open and the session appears in the list as "creating".
+	// nil falls back to quit-and-create-in-foreground (ActionNew).
+	CreateDetached func(branch string) (logPath string, err error)
 }
 
 type ActionKind int
@@ -57,17 +61,29 @@ const (
 )
 
 type model struct {
-	opts     Options
-	sessions []driver.Session
-	quota    string
-	cursor   int
-	mode     mode
-	input    string // branch name being typed in modeNew
-	status   string // transient line: errors, confirmations
-	loading  bool
-	loaded   bool // first fetch has landed
-	frame    int  // spinner frame
-	action   Action
+	opts      Options
+	sessions  []driver.Session
+	quota     string
+	cursor    int
+	mode      mode
+	input     string // branch name being typed in modeNew
+	status    string // transient line: errors, confirmations
+	statusBad bool   // status is an error (red) vs a notice (accent)
+	loading   bool
+	loaded    bool // first fetch has landed
+	polling   bool // an auto-refresh poll is scheduled (creates in flight)
+	watch     int  // poll rounds left after a spawn (until it's listable)
+	frame     int  // spinner frame
+	action    Action
+}
+
+func anyCreating(sessions []driver.Session) bool {
+	for _, s := range sessions {
+		if s.State == driver.StateCreating {
+			return true
+		}
+	}
+	return false
 }
 
 type sessionsMsg struct {
@@ -79,8 +95,23 @@ type quotaMsg string
 
 type tickMsg struct{}
 
+// pollMsg drives the slow auto-refresh that runs while a session is creating,
+// so a background create's progress lands in the list without pressing r.
+type pollMsg struct{}
+
+// spawnedMsg reports a detached create kicked off (or failed to).
+type spawnedMsg struct {
+	branch string
+	log    string
+	err    error
+}
+
 func tickCmd() tea.Cmd {
 	return tea.Tick(120*time.Millisecond, func(time.Time) tea.Msg { return tickMsg{} })
+}
+
+func pollCmd() tea.Cmd {
+	return tea.Tick(5*time.Second, func(time.Time) tea.Msg { return pollMsg{} })
 }
 
 func (m model) fetch() tea.Msg {
@@ -102,12 +133,42 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading = false
 		m.loaded = true
 		if msg.err != nil {
-			m.status = msg.err.Error()
+			m.status, m.statusBad = msg.err.Error(), true
 			return m, nil
 		}
 		m.sessions = msg.sessions
 		if m.cursor >= len(m.sessions) {
 			m.cursor = max(0, len(m.sessions)-1)
+		}
+		// While anything is still creating, keep refreshing on our own so a
+		// background create walks to "running" without the user pressing r.
+		if !m.polling && anyCreating(m.sessions) {
+			m.polling = true
+			return m, pollCmd()
+		}
+		return m, nil
+	case pollMsg:
+		m.polling = false
+		if m.watch > 0 {
+			m.watch--
+		}
+		// watch keeps the chain alive right after a spawn, before the new
+		// instance is visible in the provider's list.
+		if m.watch > 0 || anyCreating(m.sessions) {
+			m.polling = true
+			return m, tea.Batch(m.fetch, pollCmd()) // silent refresh: no spinner flicker
+		}
+		return m, nil
+	case spawnedMsg:
+		if msg.err != nil {
+			m.status, m.statusBad = msg.err.Error(), true
+			return m, nil
+		}
+		m.status, m.statusBad = "creating "+msg.branch+" in the background — it appears below shortly (log: "+msg.log+")", false
+		m.watch = 12 // ~60s of polling even before the instance shows up
+		if !m.polling {
+			m.polling = true
+			return m, pollCmd()
 		}
 		return m, nil
 	case quotaMsg:
@@ -179,9 +240,25 @@ func (m model) updateNew(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc", "ctrl+c":
 		m.mode = modeList
 	case "enter":
-		if m.input != "" {
+		if m.input == "" {
+			return m, nil
+		}
+		if m.opts.CreateDetached == nil { // legacy: quit, create in foreground
 			m.action = Action{Kind: ActionNew, Branch: m.input}
 			return m, tea.Quit
+		}
+		for _, s := range m.sessions {
+			if s.Name == m.input {
+				m.mode = modeList
+				m.status, m.statusBad = fmt.Sprintf("session %q already exists", m.input), true
+				return m, nil
+			}
+		}
+		branch := m.input
+		m.mode, m.input = modeList, ""
+		return m, func() tea.Msg {
+			log, err := m.opts.CreateDetached(branch)
+			return spawnedMsg{branch, log, err}
 		}
 	case "backspace":
 		if len(m.input) > 0 {
@@ -253,7 +330,11 @@ func (m model) View() string {
 		b.WriteString(" " + ui.Warn.Render(fmt.Sprintf("destroy %q and its disk? (y/n)", m.sessions[m.cursor].Name)) + "\n")
 	default:
 		if m.status != "" {
-			b.WriteString(" " + ui.Bad.Render("! "+m.status) + "\n")
+			if m.statusBad {
+				b.WriteString(" " + ui.Bad.Render("! "+m.status) + "\n")
+			} else {
+				b.WriteString(" " + ui.Accent.Render("▸ "+m.status) + "\n")
+			}
 		}
 		b.WriteString(" " + ui.Keys("enter", "attach", "n", "new", "d", "delete", "p", "pin", "r", "refresh", "q", "quit") + "\n")
 	}

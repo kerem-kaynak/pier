@@ -83,6 +83,10 @@ func (d *Driver) MCPLoginCommand(ctx context.Context, id, server string, port in
 	return nil, errNotImplemented
 }
 
+func (d *Driver) PortForwardCommand(ctx context.Context, id string, pairs [][2]int) (*exec.Cmd, error) {
+	return nil, errNotImplemented
+}
+
 func (d *Driver) AttachCommand(ctx context.Context, id string) (*exec.Cmd, error) {
 	// TODO: gcloud compute ssh <name> --tunnel-through-iap -- -t 'sudo -iu agent tmux attach'
 	return nil, errNotImplemented
