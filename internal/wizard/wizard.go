@@ -7,10 +7,12 @@ package wizard
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/kerem-kaynak/pier/internal/config"
@@ -98,10 +100,14 @@ func Run(newDriver func(config.Config) (driver.Driver, error), printAdminOnly bo
 	}
 
 	if cfg.Secrets.ClaudeOAuthToken == "" {
-		fmt.Println("  Claude subscription auth lives in the macOS Keychain and can't be copied.")
-		fmt.Println("  Run `claude setup-token` in another terminal to mint a session token.")
-		if tok := ask(in, "paste token (enter to skip)", ""); tok != "" {
-			cfg.Secrets.ClaudeOAuthToken = tok
+		if p := claudeSelfContained(); p != "" && slices.Contains(cfg.Secrets.Manifest, ".claude/settings.json") {
+			fmt.Printf("  ✓ claude auth: %s in ~/.claude/settings.json — travels with the manifest, no token needed\n", p)
+		} else {
+			fmt.Println("  Claude subscription auth lives in the macOS Keychain and can't be copied.")
+			fmt.Println("  Run `claude setup-token` in another terminal to mint a session token.")
+			if tok := ask(in, "paste token (enter to skip)", ""); tok != "" {
+				cfg.Secrets.ClaudeOAuthToken = tok
+			}
 		}
 	}
 
@@ -194,6 +200,34 @@ func checkIdentity(in *bufio.Reader, profile string) (string, error) {
 		return "", fmt.Errorf("profile %q needs `aws sso login --profile %s`, then re-run `pier setup`", profile, profile)
 	}
 	return "", fmt.Errorf("credentials for profile %q aren't working: %w", profile, err)
+}
+
+// claudeSelfContained reports whether ~/.claude/settings.json's env block
+// alone authenticates claude on a fresh VM (Foundry/API-key setups — the
+// file travels with the manifest). Bedrock/Vertex/Entra need cloud creds
+// that deliberately never enter sessions, so those still get the token
+// prompt.
+func claudeSelfContained() string {
+	home, _ := os.UserHomeDir()
+	b, err := os.ReadFile(filepath.Join(home, ".claude/settings.json"))
+	if err != nil {
+		return ""
+	}
+	var s struct {
+		Env map[string]string `json:"env"`
+	}
+	if json.Unmarshal(b, &s) != nil {
+		return ""
+	}
+	switch {
+	case s.Env["CLAUDE_CODE_USE_FOUNDRY"] == "1" && s.Env["ANTHROPIC_FOUNDRY_API_KEY"] != "":
+		return "foundry deployment + api key"
+	case s.Env["ANTHROPIC_API_KEY"] != "":
+		return "anthropic api key"
+	case s.Env["ANTHROPIC_AUTH_TOKEN"] != "":
+		return "auth token"
+	}
+	return ""
 }
 
 // detectManifest proposes $HOME-relative agent config worth carrying into
