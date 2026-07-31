@@ -177,7 +177,11 @@ written back. Sources (wizard-detected, confirmed into the manifest):
   append to its copied config.toml. History and laptop-path project state
   stay home. MCP servers whose auth lives in the macOS Keychain (OAuth-based
   remotes like Linear/Notion) carry their declaration but need a one-time
-  `/mcp` re-auth in the session.
+  `claude mcp login <name>` in the session — tokens rotate on refresh, so
+  copying them would let two machines revoke each other. Create lists the
+  affected servers. Remotes that accept static keys (Linear does) can instead
+  be declared locally with an `Authorization` header, which travels whole —
+  then nothing ever re-asks.
 
 ## 9. Setup wizard
 

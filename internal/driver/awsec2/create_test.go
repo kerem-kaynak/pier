@@ -3,6 +3,7 @@ package awsec2
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -69,6 +70,26 @@ func TestClaudeSeed(t *testing.T) {
 		if strings.Contains(got, bad) {
 			t.Errorf("seed must not carry %s: %s", bad, got)
 		}
+	}
+}
+
+func TestOauthRemotes(t *testing.T) {
+	home := t.TempDir()
+	if got := oauthRemotes(home, "/Users/x/repo"); got != nil {
+		t.Errorf("no config should list nothing, got %v", got)
+	}
+	cfg := `{"mcpServers":{
+			"keyed":{"type":"http","url":"https://api","headers":{"Authorization":"Bearer k"}},
+			"tool":{"type":"stdio","command":"npx","env":{"KEY":"v"}}},
+		"projects":{"/Users/x/repo":{"mcpServers":{
+			"notion":{"type":"http","url":"https://mcp.notion.com/mcp"},
+			"lin":{"type":"sse","url":"https://mcp.linear.app/sse"}}}}}`
+	if err := os.WriteFile(filepath.Join(home, ".claude.json"), []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := oauthRemotes(home, "/Users/x/repo")
+	if want := []string{"lin", "notion"}; !slices.Equal(got, want) {
+		t.Errorf("oauthRemotes = %v, want %v (header-auth'd and stdio servers excluded)", got, want)
 	}
 }
 

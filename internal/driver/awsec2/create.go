@@ -129,6 +129,10 @@ func (d *Driver) Create(ctx context.Context, spec driver.CreateSpec) (*driver.Se
 		progress(fmt.Sprintf("pushing workspace (%s — full history; %s)", fileMB(bundle), why))
 		pushes = append(pushes, struct{ local, remote string }{bundle, "/tmp/pier.bundle"})
 	}
+	home, _ := os.UserHomeDir()
+	if names := oauthRemotes(home, spec.Repo); len(names) > 0 {
+		progress("mcp " + strings.Join(names, ", ") + ": oauth tokens can't travel — run `claude mcp login <name>` once in the session")
+	}
 	for _, p := range pushes { // biggest last: its scp meter is the wait
 		if err := d.scpTo(ctx, id, p.local, p.remote); err != nil {
 			return nil, err
@@ -534,6 +538,45 @@ func claudeSeed(home, srcRepo, workdir string) []byte {
 	}
 	out, _ := json.Marshal(seed)
 	return out
+}
+
+// oauthRemotes names the seeded remote MCP servers with no static auth
+// header. Their OAuth tokens live in the OS keychain and rotate on refresh,
+// so copying them would let two machines revoke each other — each session
+// instead needs one `claude mcp login <name>`. Static-auth servers (env
+// blocks, Authorization headers) travel whole and never appear here.
+func oauthRemotes(home, srcRepo string) []string {
+	b, err := os.ReadFile(filepath.Join(home, ".claude.json"))
+	if err != nil {
+		return nil
+	}
+	var local struct {
+		McpServers map[string]json.RawMessage `json:"mcpServers"`
+		Projects   map[string]struct {
+			McpServers map[string]json.RawMessage `json:"mcpServers"`
+		} `json:"projects"`
+	}
+	if json.Unmarshal(b, &local) != nil {
+		return nil
+	}
+	set := map[string]bool{}
+	for _, servers := range []map[string]json.RawMessage{local.McpServers, local.Projects[srcRepo].McpServers} {
+		for name, raw := range servers {
+			var s struct {
+				Type    string            `json:"type"`
+				Headers map[string]string `json:"headers"`
+			}
+			if json.Unmarshal(raw, &s) == nil && (s.Type == "http" || s.Type == "sse") && len(s.Headers) == 0 {
+				set[name] = true
+			}
+		}
+	}
+	names := make([]string, 0, len(set))
+	for n := range set {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // portableMCP drops stdio servers whose command is a macOS-only path — on
