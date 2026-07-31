@@ -35,6 +35,7 @@ type Session struct {
 	User       string // derived from cloud caller identity, never configured
 	Driver     string
 	State      State
+	Strained   bool // sustained cpu/mem pressure (supervisor beacon) — resize hint
 	LastActive time.Time
 	CostNote   string // honest money: "$3/mo parked", "$0.03/h running"
 }
@@ -84,6 +85,12 @@ type Driver interface {
 	Resume(ctx context.Context, id string) error
 	Park(ctx context.Context, id string) error // client-initiated; normal parking is the VM's own shutdown
 	Destroy(ctx context.Context, id string) error
+
+	// Resize changes the instance size (vertical scaling). Providers only
+	// allow this on stopped instances, and park is exactly a stop — so a
+	// running session rides one park+resume cycle (~40s down); a parked one
+	// stays parked. Same CPU architecture only: the disk's binaries live on.
+	Resize(ctx context.Context, id, instanceType string) error
 
 	// List returns only the caller's sessions (identity-filtered tags/labels).
 	List(ctx context.Context) ([]Session, error)

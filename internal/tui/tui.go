@@ -196,18 +196,19 @@ func (m model) View() string {
 	if len(m.sessions) == 0 && !m.loading {
 		b.WriteString("  no sessions — press n to start one\n")
 	}
-	nameW, repoW := 4, 4
+	nameW, repoW, stateW := 4, 4, 8
 	for _, s := range m.sessions {
 		nameW = max(nameW, len(s.Name))
 		repoW = max(repoW, len(s.Repo))
+		stateW = max(stateW, len(stateLabel(s)))
 	}
 	for i, s := range m.sessions {
 		marker := "  "
 		if i == m.cursor {
 			marker = "▸ "
 		}
-		fmt.Fprintf(&b, "%s%-*s  %-*s  %-8s  %-4s  %s\n",
-			marker, nameW, s.Name, repoW, s.Repo, s.State, age(s.LastActive), s.CostNote)
+		fmt.Fprintf(&b, "%s%-*s  %-*s  %-*s  %-4s  %s\n",
+			marker, nameW, s.Name, repoW, s.Repo, stateW, stateLabel(s), age(s.LastActive), s.CostNote)
 	}
 	b.WriteString("\n")
 
@@ -223,6 +224,15 @@ func (m model) View() string {
 		b.WriteString("enter attach · n new · d delete · p pin · r refresh · q quit\n")
 	}
 	return b.String()
+}
+
+// stateLabel renders the state plus the supervisor's strain flag — the TUI's
+// nudge toward `pier resize`.
+func stateLabel(s driver.Session) string {
+	if s.Strained {
+		return string(s.State) + " (strained)"
+	}
+	return string(s.State)
 }
 
 func age(t time.Time) string {

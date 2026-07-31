@@ -33,7 +33,10 @@ model-auth brokering (harness configs are copied, nothing more), Windows.
 
 Session = **one micro-VM + its persistent disk**. Park = native instance stop
 (disk persists, RAM lost). Resume = instance start. Destroy = terminate +
-delete disk. This is why VMs beat the container services for this product:
+delete disk. Resize = the same park/resume cycle with an instance-type change
+in between (providers only allow type changes while stopped — so a strained
+session grows with ~40s of downtime, same CPU arch only). This is why VMs beat
+the container services for this product:
 
 - ECS/Fargate: tasks are immutable and can't stop/resume with local state.
 - Cloud Run: no interactive TTY semantics, no persistent local disk.
@@ -118,6 +121,12 @@ Configurable at wizard time and in config: `idle_timeout` (default 30m,
 `"never"` allowed), `unattended_cap` (default 8h, disable-able). Per-session:
 `--idle`, `--no-park`, `--cap`, and `pier keep <match>` to pin a session.
 
+The beacon also carries a `strained` flag — kernel PSI (`/proc/pressure/cpu`
+avg60 ≥ 40, memory ≥ 10) — which ls/TUI render as `working (strained)`, the
+nudge toward `pier resize`. The supervisor never resizes anything itself: the
+VM has no cloud credentials (invariant), and auto-scaling is a surprise-cost
+footgun. The human is the trigger; the fix is one command.
+
 ## 7. Speed
 
 Targets: **create → attached 60–90s; resume → attached ~30s** (measured
@@ -184,6 +193,7 @@ pier ls                 list own sessions
 pier attach <match>     reattach; resumes if parked
 pier rm <match>         destroy (instance + disk)
 pier keep <match>       disable auto-park for a session
+pier resize <match> <type>  change VM size (running: park→modify→resume; same arch)
 pier setup              wizard (--print-admin for the no-IAM-rights path)
 pier bake               build/refresh the prebaked image
 pier doctor             checks

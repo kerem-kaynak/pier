@@ -69,6 +69,12 @@ func (d *Driver) Resume(ctx context.Context, id string) error  { return errNotIm
 func (d *Driver) Park(ctx context.Context, id string) error    { return errNotImplemented }
 func (d *Driver) Destroy(ctx context.Context, id string) error { return errNotImplemented }
 
+func (d *Driver) Resize(ctx context.Context, id, machineType string) error {
+	// TODO: instances set-machine-type (TERMINATED only) — same park→modify→
+	// resume shape as awsec2.
+	return errNotImplemented
+}
+
 func (d *Driver) List(ctx context.Context) ([]driver.Session, error) {
 	return nil, errNotImplemented
 }

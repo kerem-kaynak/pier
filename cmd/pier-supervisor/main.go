@@ -31,12 +31,18 @@ const (
 	statusPath = "/run/pier/status.json"
 	tick       = 30 * time.Second
 	cpuBusyPct = 5.0
+	// Strain thresholds on the kernel's PSI avg60 (% of the last minute some
+	// task sat stalled on the resource). Surfaced by ls/TUI as a resize hint;
+	// the supervisor never acts on it — the VM has no cloud credentials.
+	cpuStrainPct = 40.0
+	memStrainPct = 10.0
 )
 
 type status struct {
-	State  string    `json:"state"` // attached | working | idle
-	Since  time.Time `json:"since"`
-	Reason string    `json:"reason,omitempty"`
+	State    string    `json:"state"` // attached | working | idle
+	Since    time.Time `json:"since"`
+	Strained bool      `json:"strained,omitempty"`
+	Reason   string    `json:"reason,omitempty"`
 }
 
 func main() {
@@ -70,6 +76,7 @@ func main() {
 		if last.State != st {
 			last = status{State: st, Since: now}
 		}
+		last.Strained = strained()
 		writeStatus(last)
 
 		if idleTimeout > 0 && !attached && !busy && now.Sub(idleSince) > idleTimeout {
@@ -148,6 +155,42 @@ func ptyActive() bool {
 		}
 	}
 	return false
+}
+
+// strained reports sustained resource pressure. avg60 already smooths over a
+// minute, so no extra hysteresis. No /proc/pressure (kernel without PSI) or
+// parse trouble reads as 0 = not strained.
+func strained() bool {
+	return psiAvg60("/proc/pressure/cpu") >= cpuStrainPct ||
+		psiAvg60("/proc/pressure/memory") >= memStrainPct
+}
+
+func psiAvg60(path string) float64 {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+	return parsePSIAvg60(string(b))
+}
+
+// parsePSIAvg60 pulls avg60 off the "some" line:
+//
+//	some avg10=0.00 avg60=12.34 avg300=5.00 total=123456
+func parsePSIAvg60(s string) float64 {
+	for _, line := range strings.Split(s, "\n") {
+		f := strings.Fields(line)
+		if len(f) < 2 || f[0] != "some" {
+			continue
+		}
+		for _, kv := range f[1:] {
+			if v, ok := strings.CutPrefix(kv, "avg60="); ok {
+				if x, err := strconv.ParseFloat(v, 64); err == nil {
+					return x
+				}
+			}
+		}
+	}
+	return 0
 }
 
 func writeStatus(s status) {

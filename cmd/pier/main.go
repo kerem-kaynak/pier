@@ -47,6 +47,7 @@ usage:
   pier attach <session>     attach (auto-resumes if parked)
   pier rm <session> [-f]    destroy session and its disk
   pier keep <session>       pin: disable idle self-park
+  pier resize <session> <type>  grow/shrink the VM (running: ~40s park+resume; same arch only)
   pier setup                first-run wizard (creates cloud groundwork)
       --print-admin           print the admin-runnable setup commands instead
   pier doctor               environment + account checks
@@ -69,6 +70,8 @@ func main() {
 		cmdRM(args[1:])
 	case "keep":
 		cmdKeep(args[1:])
+	case "resize":
+		cmdResize(args[1:])
 	case "setup":
 		cmdSetup(args[1:])
 	case "doctor":
@@ -259,10 +262,23 @@ func cmdLS() {
 	}
 	w := tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
 	fmt.Fprintln(w, "NAME\tREPO\tSTATE\tAGE\tCOST")
+	anyStrained := false
 	for _, s := range sessions {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", s.Name, s.Repo, s.State, age(s.LastActive), s.CostNote)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", s.Name, s.Repo, stateLabel(s), age(s.LastActive), s.CostNote)
+		anyStrained = anyStrained || s.Strained
 	}
 	w.Flush()
+	if anyStrained {
+		fmt.Println("\n! strained = sustained cpu/mem pressure — grow with `pier resize <session> <type>`")
+	}
+}
+
+// stateLabel renders the state plus the supervisor's strain flag.
+func stateLabel(s driver.Session) string {
+	if s.Strained {
+		return string(s.State) + " (strained)"
+	}
+	return string(s.State)
 }
 
 // enrich upgrades StateRunning to working/idle by reading each running
@@ -283,8 +299,9 @@ func enrich(drv driver.Driver, sessions []driver.Session) {
 				return
 			}
 			var st struct {
-				State string    `json:"state"`
-				Since time.Time `json:"since"`
+				State    string    `json:"state"`
+				Since    time.Time `json:"since"`
+				Strained bool      `json:"strained"`
 			}
 			if json.Unmarshal([]byte(out), &st) != nil {
 				return
@@ -295,6 +312,7 @@ func enrich(drv driver.Driver, sessions []driver.Session) {
 			case "idle":
 				s.State = driver.StateIdle
 			}
+			s.Strained = st.Strained
 			if !st.Since.IsZero() {
 				s.LastActive = st.Since
 			}
@@ -413,6 +431,24 @@ func pin(drv driver.Driver, s driver.Session) error {
 	_, err := drv.Exec(context.Background(), s.ID,
 		"sudo sed -i 's/^idle_timeout=.*/idle_timeout=never/' /etc/pier/supervisor.conf")
 	return err
+}
+
+func cmdResize(args []string) {
+	if len(args) != 2 {
+		fatal(fmt.Errorf("usage: pier resize <session> <instance-type>"))
+	}
+	_, drv := loadDriver()
+	s := match(drv, args[0])
+	itype := args[1]
+	if s.State == driver.StateParked {
+		fmt.Printf("resizing parked %s to %s (stays parked)\n", s.Name, itype)
+	} else {
+		fmt.Printf("resizing %s to %s — parks, resizes, resumes (~40-60s)\n", s.Name, itype)
+	}
+	if err := drv.Resize(context.Background(), s.ID, itype); err != nil {
+		fatal(err)
+	}
+	fmt.Printf("%s is now a %s\n", s.Name, itype)
 }
 
 // --- setup / doctor / bake / teardown ---------------------------------------------

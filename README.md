@@ -29,6 +29,10 @@ verified spike numbers: [docs/SPEC.md](docs/SPEC.md), [spike/](spike/).
   when you detach and the agent goes quiet, the VM shuts itself down —
   EC2-stop, disk intact (≈ $3-4/mo instead of ~$0.03/h). `pier attach` starts
   it again. A runaway cap parks even "busy" sessions after N hours detached.
+- The supervisor also reports sustained cpu/mem pressure (kernel PSI):
+  `pier ls` shows `working (strained)` and `pier resize <session> t4g.xlarge`
+  grows the VM through one ~40s park/resume cycle, disk and state intact.
+  Deliberately not automatic — the VM holds no cloud credentials.
 - `pier bake` prebakes an AMI with the harnesses installed, cutting session
   creation from minutes to ~60-90s. The same cloud-init runs on stock and
   baked images — every step is guarded, so baking is optional.

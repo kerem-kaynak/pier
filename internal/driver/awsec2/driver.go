@@ -161,6 +161,60 @@ func (d *Driver) Park(ctx context.Context, id string) error {
 	return err
 }
 
+// Resize: EC2 permits instance-type changes only while stopped, and park is
+// exactly a stop — so resize is park → modify → resume. A parked session is
+// resized in place and stays parked (costs nothing to leave it that way).
+func (d *Driver) Resize(ctx context.Context, id, itype string) error {
+	out, err := d.aws(ctx, "ec2", "describe-instances", "--instance-ids", id,
+		"--query", "Reservations[0].Instances[0].[State.Name,Architecture,InstanceType]",
+		"--output", "text")
+	if err != nil {
+		return err
+	}
+	f := strings.Fields(out)
+	if len(f) != 3 {
+		return fmt.Errorf("unexpected describe-instances output: %q", out)
+	}
+	state, curArch, curType := f[0], f[1], f[2]
+	if curType == itype {
+		return fmt.Errorf("session is already a %s", itype)
+	}
+	if curArch == "x86_64" {
+		curArch = "amd64"
+	}
+	newArch, err := d.archOf(ctx, itype)
+	if err != nil {
+		return err
+	}
+	if newArch != curArch {
+		return fmt.Errorf("cannot resize across architectures: the disk is %s, %s is %s — pick a same-arch type", curArch, itype, newArch)
+	}
+
+	wasRunning := false
+	switch state {
+	case "running", "pending":
+		wasRunning = true
+		if _, err := d.aws(ctx, "ec2", "stop-instances", "--instance-ids", id); err != nil {
+			return err
+		}
+	case "stopping", "stopped":
+		// already parked (or on its way); resize in place
+	default:
+		return fmt.Errorf("session is %s — nothing to resize", state)
+	}
+	if _, err := d.aws(ctx, "ec2", "wait", "instance-stopped", "--instance-ids", id); err != nil {
+		return err
+	}
+	if _, err := d.aws(ctx, "ec2", "modify-instance-attribute", "--instance-id", id,
+		"--instance-type", "Value="+itype); err != nil {
+		return err
+	}
+	if wasRunning {
+		return d.Resume(ctx, id)
+	}
+	return nil
+}
+
 func (d *Driver) Destroy(ctx context.Context, id string) error {
 	if _, err := d.aws(ctx, "ec2", "terminate-instances", "--instance-ids", id); err != nil {
 		return err
