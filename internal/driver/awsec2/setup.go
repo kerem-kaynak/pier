@@ -156,11 +156,16 @@ func (d *Driver) Doctor(ctx context.Context) []driver.Check {
 	tool("session-manager-plugin", "session-manager-plugin", "brew install --cask session-manager-plugin")
 	tool("ssh + ssh-keygen", "ssh-keygen", "install OpenSSH")
 
-	// Optional but load-bearing for GitHub repos: without it, private repos
-	// ship the slow full bundle and `git push` from sessions can't auth.
-	gh := driver.Check{Name: "github credential", OK: GitHubToken() != "",
-		Detail: "private-repo fast fetch + push from sessions"}
-	if !gh.OK {
+	// Optional but load-bearing for GitHub repos: without any of these,
+	// private repos ship the slow full bundle and sessions can't push.
+	gh := driver.Check{Name: "github credential", OK: true}
+	switch {
+	case GitHubToken() != "":
+		gh.Detail = "token found — private-repo fast fetch + push from sessions"
+	case exec.Command("ssh-add", "-l").Run() == nil:
+		gh.Detail = "ssh agent only — fast fetch relays it; pushes work while attached (`gh auth login` for detached pushes)"
+	default:
+		gh.OK = false
 		gh.Detail = "none found (optional) — private repos use the slow bundle path and sessions can't push; fix: `gh auth login`"
 	}
 	checks = append(checks, gh)

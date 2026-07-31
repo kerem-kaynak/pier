@@ -81,10 +81,22 @@ func (d *Driver) Create(ctx context.Context, spec driver.CreateSpec) (*driver.Se
 		return nil, fmt.Errorf("base ref %q not found", baseRef(spec))
 	}
 	mode, origin := originInfo(spec.Repo, sha)
+	forwardAgent := false
 	why := "no github origin has the base"
-	if mode != "full" && !originReachable(ctx, origin, d.SessionEnv["GH_TOKEN"]) {
-		progress("github origin not reachable with the auth sessions get — using the full bundle")
-		mode, why = "full", "github not reachable with session auth"
+	if mode != "full" {
+		switch {
+		case originReachable(ctx, origin, d.SessionEnv["GH_TOKEN"]):
+			// https works with the auth the session gets (token or anonymous)
+		case sshOriginUsable(ctx, spec.Repo):
+			// No https credential, but the laptop's ssh agent can auth: keep
+			// the ssh origin and forward the agent for the bootstrap fetch.
+			origin, _ = gitOut(spec.Repo, "remote", "get-url", "origin")
+			forwardAgent = true
+			progress("no github token — the fetch borrows your ssh agent (keys stay on this machine)")
+		default:
+			progress("github origin not reachable with the auth sessions get — using the full bundle")
+			mode, why = "full", "github not reachable with session auth"
+		}
 	}
 	bundle := ""
 	if mode != "origin" {
@@ -140,7 +152,11 @@ func (d *Driver) Create(ctx context.Context, spec driver.CreateSpec) (*driver.Se
 	}
 
 	progress("bootstrapping (stock AMI waits for cloud-init here — `pier bake` skips that)")
-	if out, err := d.sshRun(ctx, id, "bash /tmp/pier-bootstrap.sh"); err != nil {
+	var fwd []string
+	if forwardAgent {
+		fwd = []string{"-A"}
+	}
+	if out, err := d.sshRunOpts(ctx, id, fwd, "bash /tmp/pier-bootstrap.sh"); err != nil {
 		return nil, fmt.Errorf("bootstrap: %w\n%s", err, out)
 	}
 
@@ -281,7 +297,7 @@ runcmd:
     command -v claude >/dev/null || npm install -g @anthropic-ai/claude-code
     command -v codex >/dev/null || npm install -g @openai/codex
     getent group docker >/dev/null && usermod -aG docker agent
-    grep -q 'pier/env' /home/agent/.bashrc || printf '\n[ -f ~/.config/pier/env ] && set -a && . ~/.config/pier/env && set +a\ncd ~/work/* 2>/dev/null || true\n' >> /home/agent/.bashrc
+    grep -q 'pier/env' /home/agent/.bashrc || printf '\n[ -f ~/.config/pier/env ] && set -a && . ~/.config/pier/env && set +a\n[ -S ~/.ssh/agent.sock ] && export SSH_AUTH_SOCK=~/.ssh/agent.sock\ncd ~/work/* 2>/dev/null || true\n' >> /home/agent/.bashrc
 `
 
 func renderUserData(spec driver.CreateSpec, pubkey string) string {
@@ -350,8 +366,10 @@ cd "$HOME/work/{{REPO}}"
 git init -q -b '{{BRANCH}}'
 {{GITCONFIG}}
 if [ -n '{{ORIGIN}}' ]; then git remote add origin '{{ORIGIN}}'; fi
-# gh brokers git credentials for origin fetches; on a stock AMI it may still
-# be installing under cloud-init — wait only when it's load-bearing.
+# ssh origin = fetch rides the laptop's forwarded agent; pre-trust github.
+case '{{ORIGIN}}' in git@*|ssh://*) mkdir -p "$HOME/.ssh" && ssh-keyscan github.com >> "$HOME/.ssh/known_hosts" 2>/dev/null || true ;; esac
+# gh brokers git credentials for https origin fetches; on a stock AMI it may
+# still be installing under cloud-init — wait only when it's load-bearing.
 if [ '{{MODE}}' != full ] && [ -n "${GH_TOKEN:-}" ] && ! command -v gh >/dev/null; then sudo cloud-init status --wait >/dev/null || true; fi
 { command -v gh >/dev/null && [ -n "${GH_TOKEN:-}" ] && gh auth setup-git >/dev/null 2>&1; } || true
 case '{{MODE}}' in
@@ -367,7 +385,9 @@ tar -xf /tmp/pier-files.tar -C . --strip-components=1 repo 2>/dev/null || true
 mkdir -p "$HOME/.codex"
 grep -q 'work/{{REPO}}' "$HOME/.codex/config.toml" 2>/dev/null || printf '\n[projects."/home/agent/work/{{REPO}}"]\ntrust_level = "trusted"\n' >> "$HOME/.codex/config.toml"
 
-tmux has-session -t main 2>/dev/null || tmux new-session -d -s main -c "$HOME/work/{{REPO}}"
+# SSH_AUTH_SOCK points at the attach-refreshed symlink (dangling until the
+# first attach forwards an agent; harmless when it never does).
+tmux has-session -t main 2>/dev/null || tmux new-session -d -s main -e "SSH_AUTH_SOCK=$HOME/.ssh/agent.sock" -c "$HOME/work/{{REPO}}"
 if [ -x ./.pier-setup.sh ]; then
   tmux new-window -d -t main -n setup "bash -c 'set -a; . ~/.config/pier/env 2>/dev/null; set +a; cd ~/work/{{REPO}} && ./.pier-setup.sh 2>&1 | tee ~/.pier-setup.log'"
 fi
@@ -414,7 +434,8 @@ func gitOut(repo string, args ...string) (string, error) {
 // shared history, ship only the local-delta bundle. "full": no usable
 // GitHub origin — ship everything. The returned url is what the VM's origin
 // remote is set to (GitHub ssh forms become https so the GH_TOKEN credential
-// helper can auth; ~/.ssh deliberately never travels).
+// helper can auth; when only the laptop's ssh agent can auth, Create swaps
+// the ssh URL back in and forwards the agent — ~/.ssh never travels either way).
 func originInfo(repo, sha string) (mode, url string) {
 	raw, err := gitOut(repo, "remote", "get-url", "origin")
 	if err != nil || raw == "" {
@@ -474,6 +495,31 @@ func originReachable(ctx context.Context, url, token string) bool {
 	cmd := exec.CommandContext(ctx, "git", append(args, "ls-remote", "--heads", url)...)
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_ASKPASS=", "GH_TOKEN="+token)
 	return cmd.Run() == nil
+}
+
+// sshOriginUsable reports whether a session could fetch the ssh origin with
+// the laptop's ssh agent forwarded: an agent is running with keys, and
+// ls-remote over ssh succeeds locally without prompting. Tried only when no
+// https credential worked. Agent forwarding is a relay, not a copy — the key
+// never leaves the laptop; the VM borrows it for the bootstrap fetch (and for
+// pushes while attached).
+func sshOriginUsable(ctx context.Context, repo string) bool {
+	raw, err := gitOut(repo, "remote", "get-url", "origin")
+	if err != nil || !isSSHURL(raw) {
+		return false
+	}
+	if exec.Command("ssh-add", "-l").Run() != nil {
+		return false // no agent, or no keys in it — nothing to forward
+	}
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "ls-remote", "--heads", raw)
+	cmd.Env = append(os.Environ(), "GIT_SSH_COMMAND=ssh -o BatchMode=yes -o ConnectTimeout=10")
+	return cmd.Run() == nil
+}
+
+func isSSHURL(u string) bool {
+	return strings.HasPrefix(u, "git@") || strings.HasPrefix(u, "ssh://")
 }
 
 var sshGithub = regexp.MustCompile(`^(?:ssh://)?git@github\.com[:/](.+?)(?:\.git)?$`)

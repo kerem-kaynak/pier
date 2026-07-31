@@ -65,7 +65,13 @@ func (d *Driver) sshOpts(id string) []string {
 }
 
 func (d *Driver) sshRun(ctx context.Context, id, script string) (string, error) {
-	args := append(d.sshOpts(id), "agent@"+id, script)
+	return d.sshRunOpts(ctx, id, nil, script)
+}
+
+// sshRunOpts is sshRun with extra ssh flags — the bootstrap passes -A when
+// the workspace fetch rides the laptop's ssh agent.
+func (d *Driver) sshRunOpts(ctx context.Context, id string, extra []string, script string) (string, error) {
+	args := append(append(d.sshOpts(id), extra...), "agent@"+id, script)
 	out, err := exec.CommandContext(ctx, "ssh", args...).CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("ssh %s: %s", id, strings.TrimSpace(string(out)))

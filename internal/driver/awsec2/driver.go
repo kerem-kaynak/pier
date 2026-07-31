@@ -224,8 +224,14 @@ func (d *Driver) Destroy(ctx context.Context, id string) error {
 	return nil
 }
 
+// AttachCommand forwards the laptop's ssh agent (a no-op when none runs) and
+// refreshes ~/.ssh/agent.sock before tmux: each attach gets a fresh forwarded
+// socket path, while long-lived tmux panes hold the old one — bashrc points
+// them at the symlink instead, so `git push` over ssh keeps working across
+// re-attaches. Keys never leave the laptop; detached sessions can't use them.
 func (d *Driver) AttachCommand(ctx context.Context, id string) (*exec.Cmd, error) {
-	args := append(d.sshOpts(id), "-t", "agent@"+id, "tmux new-session -A -s main")
+	args := append(d.sshOpts(id), "-t", "-o", "ForwardAgent=yes", "agent@"+id,
+		`[ -S "$SSH_AUTH_SOCK" ] && ln -sf "$SSH_AUTH_SOCK" ~/.ssh/agent.sock; tmux new-session -A -s main`)
 	cmd := exec.CommandContext(ctx, "ssh", args...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	return cmd, nil

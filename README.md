@@ -63,16 +63,23 @@ create is much slower than that, it's one of two things:
   history through the SSM tunnel at ~1 MB/s (a 300 MB history ≈ 5 min). The
   create output says which mode you got and why. The fast path needs:
   - the repo hosted on GitHub, with the base commit pushed, and
-  - for **private** repos: any GitHub credential on the laptop — pier takes
-    the gh CLI's login if you have it, otherwise whatever your git https
-    credential helper already pushes with. The same credential is what makes
-    `git push` and PRs work from the VM. Public repos need nothing.
+  - for **private** repos: any GitHub credential on the laptop, tried in
+    order — the gh CLI's login, whatever your git https credential helper
+    pushes with, or plain **ssh keys**: with an ssh origin and a running
+    ssh-agent, pier forwards the agent through the tunnel for the fetch. The
+    key never leaves your machine; the VM borrows it, like agent forwarding
+    always has. Public repos need nothing.
 
   Before skipping the bundle, pier verifies the GitHub fetch works with
   exactly the auth the session will have — anything doubtful degrades to the
   slow-but-universal bundle instead of failing. No GitHub credential is ever
   *required*: sessions run fine without one, just with tunnel-speed transfers
-  and no push. `pier doctor` shows whether one was found.
+  and no push. `pier doctor` shows what was found.
+
+  Pushing from a session follows the same split: with a token, `git push`
+  and PRs work anytime; with ssh keys only, pushes work **while you're
+  attached** (the forwarded agent goes home when you disconnect — exactly
+  the property that makes it safe).
 
 ## Build
 

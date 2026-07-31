@@ -148,9 +148,14 @@ numbers live in spike/README.md).
    of pushed history travel as a thin delta bundle (KBs). Before skipping the
    bundle, a preflight `ls-remote` proves the fetch works with exactly the
    auth a session gets (GH_TOKEN or anonymous; local credential helpers
-   disabled) — private repos without a usable token degrade automatically.
-   The full-history bundle over SSM remains the universal fallback: no
-   origin, non-GitHub host, never-pushed history, failed preflight.
+   disabled). With no usable https credential but a working ssh origin +
+   local ssh-agent, the ssh URL is kept and the **agent is forwarded** (`-A`)
+   for the bootstrap fetch — the key never leaves the laptop. Attach also
+   forwards the agent (symlink-stabilized `SSH_AUTH_SOCK` for tmux), so
+   ssh-key users can push while attached; detached pushes still need a token,
+   because a persistent capability needs a persistent credential. The
+   full-history bundle over SSM remains the universal fallback: no origin,
+   non-GitHub host, never-pushed history, all preflights failed.
 
 Cut for v1 (numbers didn't justify the moving parts): warm pools, mid-create
 quota polling.
@@ -165,7 +170,9 @@ written back. Sources (wizard-detected, confirmed into the manifest):
 - `~/.claude/` settings, `CLAUDE.md`, agents
 - a GitHub credential for git push/PRs and private-repo fetch: `gh auth
   token` if gh is logged in, else the laptop's https git credential
-  (`git credential fill`) — never required, doctor reports which was found
+  (`git credential fill`), else the ssh agent relayed via forwarding (fetch
+  always, push while attached) — never required, doctor reports which was
+  found. `~/.ssh` itself never travels.
 - Claude subscription auth on macOS lives in the Keychain → one-time
   `claude setup-token` during the wizard, injected as an env var in sessions.
   (Foundry/API-key setups need no token: their auth rides in
