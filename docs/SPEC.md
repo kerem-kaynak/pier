@@ -215,7 +215,12 @@ numbers live in spike/README.md).
    ssh-key users can push while attached; detached pushes still need a token,
    because a persistent capability needs a persistent credential. The
    full-history bundle over SSM remains the universal fallback: no origin,
-   non-GitHub host, never-pushed history, all preflights failed.
+   non-GitHub host, never-pushed history, all preflights failed. Whatever the
+   mode, the repo's **loose files** — every untracked file plus the ignored
+   `.env*` at any depth — ride the secrets tar, so the session gets the
+   working tree as it sits on the laptop. Two deliberate exceptions:
+   uncommitted edits to tracked files (sessions branch from HEAD) and
+   ignored bulk (node_modules, .venv — the VM regenerates those).
 
 Cut for v1 (numbers didn't justify the moving parts): warm pools, mid-create
 quota polling.
@@ -225,7 +230,9 @@ quota polling.
 One-way copy from the laptop at create; never stored anywhere else, never
 written back. Sources (wizard-detected, confirmed into the manifest):
 
-- repo `.env*` (create-time globs)
+- repo loose files: every untracked file plus the ignored `.env*` at any
+  depth (monorepos keep them per-app) — tracked files arrive with the fetch,
+  other ignored paths are rebuilt on the VM
 - `~/.codex/` (auth.json, config.toml)
 - `~/.claude/` settings, `CLAUDE.md`, agents
 - a GitHub credential for git push/PRs and private-repo fetch: `gh auth

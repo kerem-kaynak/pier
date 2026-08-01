@@ -708,10 +708,53 @@ func portableMCP(servers map[string]json.RawMessage) map[string]json.RawMessage 
 	return out
 }
 
+// repoLooseFiles lists the working-tree files (repo-relative) that git does
+// NOT carry, so a session gets the repo as it sits on the laptop, not just
+// its committed state: every untracked file (work in progress, at any depth),
+// plus the ignored .env* (monorepos keep them per-app). Other ignored files
+// deliberately stay out — that's node_modules, .venv, dist: regenerable bulk
+// a 1 MB/s tunnel can't justify — listed with --directory so wholly-ignored
+// dirs collapse to one entry and their .env fixtures vanish with them.
+// Tracked files arrive with the fetch (uncommitted edits to them don't
+// travel: sessions branch from HEAD). Git trouble falls back to a root glob.
+func repoLooseFiles(repoRoot string) []string {
+	var out []string
+	for _, l := range []struct {
+		args    []string
+		envOnly bool
+	}{
+		{[]string{"ls-files", "-z", "-o", "--exclude-standard"}, false},
+		{[]string{"ls-files", "-z", "-o", "-i", "--exclude-standard", "--directory"}, true},
+	} {
+		listing, err := gitOut(repoRoot, l.args...)
+		if err != nil {
+			gl, _ := filepath.Glob(filepath.Join(repoRoot, ".env*"))
+			out = out[:0]
+			for _, p := range gl {
+				out = append(out, filepath.Base(p))
+			}
+			return out
+		}
+		for _, p := range strings.Split(listing, "\x00") {
+			if p == "" || strings.HasSuffix(p, "/") {
+				continue
+			}
+			if l.envOnly {
+				if ok, _ := filepath.Match(".env*", filepath.Base(p)); !ok {
+					continue
+				}
+			}
+			out = append(out, p)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // buildFilesTar packs, into one tar: manifest files/dirs under $HOME (prefix
-// home/), repo-local .env* (prefix repo/), and a generated home/.config/pier/env
-// with the session tokens. The bootstrap extracts the two prefixes to the
-// right places.
+// home/), the repo's loose files — untracked plus ignored .env*, relative
+// paths kept (prefix repo/) — and a generated home/.config/pier/env with the
+// session tokens. The bootstrap extracts the two prefixes to the right places.
 func buildFilesTar(dst string, manifest []string, repoRoot string, env map[string]string) error {
 	f, err := os.Create(dst)
 	if err != nil {
@@ -776,10 +819,10 @@ func buildFilesTar(dst string, manifest []string, repoRoot string, env map[strin
 		}
 	}
 
-	envFiles, _ := filepath.Glob(filepath.Join(repoRoot, ".env*"))
-	for _, p := range envFiles {
+	for _, rel := range repoLooseFiles(repoRoot) {
+		p := filepath.Join(repoRoot, rel)
 		if fi, err := os.Stat(p); err == nil && fi.Mode().IsRegular() {
-			if err := addFile(p, "repo/"+filepath.Base(p), fi.Mode()); err != nil {
+			if err := addFile(p, "repo/"+rel, fi.Mode()); err != nil {
 				return err
 			}
 		}

@@ -39,9 +39,13 @@ verified spike numbers: [docs/SPEC.md](docs/SPEC.md), [spike/](spike/).
 - Your repo reaches the VM GitHub-first: when the base commit is already on
   a GitHub origin, the VM fetches straight from GitHub and only secrets ride
   the tunnel. Local-only commits travel as a thin delta bundle; anything else
-  falls back to a full-history git bundle (committed state only).
-- Secrets travel as an explicit manifest (`~/.claude`, `~/.codex`, repo
-  `.env*`) plus tokens (`gh auth token`, `claude setup-token`).
+  falls back to a full-history git bundle. Untracked files and per-app
+  `.env*` ride along too — the session gets your working tree as it sits,
+  minus regenerable ignored bulk (node_modules) and uncommitted edits to
+  tracked files (sessions branch from HEAD).
+- Secrets travel as an explicit manifest (`~/.claude`, `~/.codex`, the
+  repo's untracked and `.env*` files) plus tokens (`gh auth token`,
+  `claude setup-token`).
 - MCP servers, agents, skills, and plugins travel with their config — auth
   included when it's static (env vars, API-key headers). OAuth-backed remote
   MCPs keep rotating tokens in the OS keychain, which can't be copied (two

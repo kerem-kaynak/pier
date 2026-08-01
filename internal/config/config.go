@@ -29,7 +29,8 @@ type AWS struct {
 
 type Secrets struct {
 	// Manifest: files/dirs under $HOME copied one-way into each session's
-	// home at create. Repo-local .env* files are always copied additionally.
+	// home at create. The repo's loose files (untracked + ignored .env*,
+	// any depth) are always copied additionally.
 	Manifest []string `toml:"manifest"`
 	// ClaudeOAuthToken: from `claude setup-token` (macOS Keychain escape
 	// hatch); injected as CLAUDE_CODE_OAUTH_TOKEN in sessions.

@@ -2,6 +2,7 @@ package awsec2
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -153,5 +154,46 @@ func TestRenderUserDataGuards(t *testing.T) {
 		if !strings.Contains(ud, guard) {
 			t.Errorf("user-data missing idempotency guard %q", guard)
 		}
+	}
+}
+
+// A session gets the working tree as it sits: every untracked file plus the
+// ignored .env* at any depth (monorepos keep them per-app). Wholly-ignored
+// dirs (node_modules), other ignored files, and tracked files (they arrive
+// with the fetch) stay out.
+func TestRepoLooseFiles(t *testing.T) {
+	root := t.TempDir()
+	git := func(args ...string) {
+		t.Helper()
+		if out, err := exec.Command("git", append([]string{"-C", root}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	write := func(rel, content string) {
+		t.Helper()
+		p := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git("init", "-q")
+	write(".gitignore", ".env\n.env.local\nnode_modules/\n*.log\n")
+	write(".env", "ROOT=1\n")                    // ignored env — travels
+	write("apps/api/.env", "API=1\n")            // ignored env, nested — travels
+	write("apps/api/.env.local", "LOCAL=1\n")    // ignored env, nested — travels
+	write("apps/api/main.go", "package main\n")  // untracked — travels
+	write("notes.md", "wip\n")                   // untracked, root — travels
+	write("apps/api/.env.example", "X=\n")       // tracked below — arrives with the fetch
+	write("node_modules/dep/.env", "FIXTURE=\n") // inside wholly-ignored dir
+	write("debug.log", "x\n")                    // ignored non-env — stays home
+	git("add", ".gitignore", "apps/api/.env.example")
+
+	got := repoLooseFiles(root)
+	want := []string{".env", "apps/api/.env", "apps/api/.env.local", "apps/api/main.go", "notes.md"}
+	if !slices.Equal(got, want) {
+		t.Errorf("repoLooseFiles = %v, want %v", got, want)
 	}
 }
