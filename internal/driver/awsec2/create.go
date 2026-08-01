@@ -708,16 +708,29 @@ func portableMCP(servers map[string]json.RawMessage) map[string]json.RawMessage 
 	return out
 }
 
-// repoLooseFiles lists the working-tree files (repo-relative) that git does
-// NOT carry, so a session gets the repo as it sits on the laptop, not just
-// its committed state: every untracked file (work in progress, at any depth),
-// plus the ignored .env* (monorepos keep them per-app). Other ignored files
-// deliberately stay out — that's node_modules, .venv, dist: regenerable bulk
-// a 1 MB/s tunnel can't justify — listed with --directory so wholly-ignored
-// dirs collapse to one entry and their .env fixtures vanish with them.
-// Tracked files arrive with the fetch (uncommitted edits to them don't
-// travel: sessions branch from HEAD). Git trouble falls back to a root glob.
+// repoLooseFiles lists the working-tree files (repo-relative) that ride the
+// tar on top of the git checkout, so a session gets the repo as it sits on
+// the laptop, not just its committed state.
+//
+// A repo-root .pier-files takes over the selection entirely when present:
+// one path or glob per line (relative to the root; * ? [] per segment, no
+// **), # comments. A listed path travels as it sits on disk — tracked,
+// untracked, or ignored, no distinction — and a directory line carries
+// everything under it. The tar extracts after the checkout, so listed
+// content wins.
+//
+// Without the file, the default: every untracked file (work in progress, at
+// any depth) plus the ignored .env* (monorepos keep them per-app). Other
+// ignored files deliberately stay out — that's node_modules, .venv, dist:
+// regenerable bulk a 1 MB/s tunnel can't justify — listed with --directory
+// so wholly-ignored dirs collapse to one entry and their .env fixtures
+// vanish with them. Tracked files arrive with the fetch (uncommitted edits
+// to them don't travel: sessions branch from HEAD). Git trouble falls back
+// to a root glob.
 func repoLooseFiles(repoRoot string) []string {
+	if pats, ok := pierFilesPatterns(repoRoot); ok {
+		return matchPierFiles(repoRoot, pats)
+	}
 	var out []string
 	for _, l := range []struct {
 		args    []string
@@ -746,6 +759,60 @@ func repoLooseFiles(repoRoot string) []string {
 			}
 			out = append(out, p)
 		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// pierFilesPatterns reads the repo's .pier-files; ok=false means the file is
+// absent (use the default selection). An empty or all-comment file is an
+// explicit "nothing travels". Non-local lines (absolute, ..) are dropped.
+func pierFilesPatterns(repoRoot string) (pats []string, ok bool) {
+	b, err := os.ReadFile(filepath.Join(repoRoot, ".pier-files"))
+	if err != nil {
+		return nil, false
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		line = strings.TrimSuffix(strings.TrimSpace(line), "/")
+		if line == "" || strings.HasPrefix(line, "#") || !filepath.IsLocal(line) {
+			continue
+		}
+		pats = append(pats, line)
+	}
+	return pats, true
+}
+
+// matchPierFiles resolves .pier-files lines against the disk. WalkDir on a
+// glob match handles files and directories uniformly (a file path walks as
+// just itself); .git and non-regular entries are skipped.
+func matchPierFiles(repoRoot string, pats []string) []string {
+	seen := map[string]bool{}
+	for _, pat := range pats {
+		matches, _ := filepath.Glob(filepath.Join(repoRoot, pat))
+		for _, m := range matches {
+			_ = filepath.WalkDir(m, func(path string, e fs.DirEntry, err error) error {
+				if err != nil {
+					return nil
+				}
+				if e.IsDir() {
+					if e.Name() == ".git" {
+						return filepath.SkipDir
+					}
+					return nil
+				}
+				if !e.Type().IsRegular() {
+					return nil
+				}
+				if rel, err := filepath.Rel(repoRoot, path); err == nil && filepath.IsLocal(rel) {
+					seen[rel] = true
+				}
+				return nil
+			})
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for p := range seen {
+		out = append(out, p)
 	}
 	sort.Strings(out)
 	return out

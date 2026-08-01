@@ -197,3 +197,39 @@ func TestRepoLooseFiles(t *testing.T) {
 		t.Errorf("repoLooseFiles = %v, want %v", got, want)
 	}
 }
+
+// A .pier-files takes over the selection entirely: lines are paths or globs,
+// matched against the disk with no git-status distinction (the fixture isn't
+// even a git repo). Directory lines carry their whole subtree; escapes and
+// comments are dropped.
+func TestPierFiles(t *testing.T) {
+	root := t.TempDir()
+	write := func(rel string) {
+		t.Helper()
+		p := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("x\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, ".pier-files"),
+		[]byte("# what travels\napps/*/.env*\nuploads/\nsecrets.txt\n../escape\n/etc/passwd\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	write("apps/api/.env")
+	write("apps/api/.env.local")
+	write("apps/api/config.yaml") // not listed
+	write("apps/web/.env")
+	write("uploads/fixtures/a.bin") // via the directory line
+	write("secrets.txt")
+	write(".env") // root env NOT listed — the file is the whole selection
+
+	got := repoLooseFiles(root)
+	want := []string{"apps/api/.env", "apps/api/.env.local", "apps/web/.env",
+		"secrets.txt", "uploads/fixtures/a.bin"}
+	if !slices.Equal(got, want) {
+		t.Errorf("with .pier-files = %v, want %v", got, want)
+	}
+}

@@ -220,7 +220,11 @@ numbers live in spike/README.md).
    `.env*` at any depth — ride the secrets tar, so the session gets the
    working tree as it sits on the laptop. Two deliberate exceptions:
    uncommitted edits to tracked files (sessions branch from HEAD) and
-   ignored bulk (node_modules, .venv — the VM regenerates those).
+   ignored bulk (node_modules, .venv — the VM regenerates those). A
+   repo-root **`.pier-files`** replaces that selection entirely when
+   present: one path or glob per line, matched against the disk with no
+   git-status distinction — listed = travels. The tar extracts after the
+   checkout, so listed content wins.
 
 Cut for v1 (numbers didn't justify the moving parts): warm pools, mid-create
 quota polling.
@@ -232,7 +236,8 @@ written back. Sources (wizard-detected, confirmed into the manifest):
 
 - repo loose files: every untracked file plus the ignored `.env*` at any
   depth (monorepos keep them per-app) — tracked files arrive with the fetch,
-  other ignored paths are rebuilt on the VM
+  other ignored paths are rebuilt on the VM; a repo-root `.pier-files`
+  (path or glob per line) replaces this selection entirely when present
 - `~/.codex/` (auth.json, config.toml)
 - `~/.claude/` settings, `CLAUDE.md`, agents
 - a GitHub credential for git push/PRs and private-repo fetch: `gh auth

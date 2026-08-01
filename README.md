@@ -42,7 +42,9 @@ verified spike numbers: [docs/SPEC.md](docs/SPEC.md), [spike/](spike/).
   falls back to a full-history git bundle. Untracked files and per-app
   `.env*` ride along too — the session gets your working tree as it sits,
   minus regenerable ignored bulk (node_modules) and uncommitted edits to
-  tracked files (sessions branch from HEAD).
+  tracked files (sessions branch from HEAD). A repo-root `.pier-files`
+  (one path or glob per line) takes over that selection when present:
+  listed paths travel as they sit on disk, no git-status distinction.
 - Secrets travel as an explicit manifest (`~/.claude`, `~/.codex`, the
   repo's untracked and `.env*` files) plus tokens (`gh auth token`,
   `claude setup-token`).
