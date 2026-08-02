@@ -79,6 +79,16 @@ func (d *Driver) sshRunOpts(ctx context.Context, id string, extra []string, scri
 	return strings.TrimSpace(string(out)), nil
 }
 
+// sshStream is sshRun with output flowing straight to the terminal — for
+// long user-visible steps (the bake hook) where buffered output would look
+// like a hang.
+func (d *Driver) sshStream(ctx context.Context, id, script string) error {
+	args := append(d.sshOpts(id), "agent@"+id, script)
+	cmd := exec.CommandContext(ctx, "ssh", args...)
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	return cmd.Run()
+}
+
 func (d *Driver) scpTo(ctx context.Context, id, local, remote string) error {
 	args := append(d.sshOpts(id), local, "agent@"+id+":"+remote)
 	cmd := exec.CommandContext(ctx, "scp", args...)

@@ -33,9 +33,15 @@ verified spike numbers: [docs/SPEC.md](docs/SPEC.md), [spike/](spike/).
   `pier ls` shows `working (strained)` and `pier resize <session> t4g.xlarge`
   grows the VM through one ~40s park/resume cycle, disk and state intact.
   Deliberately not automatic — the VM holds no cloud credentials.
-- `pier bake` prebakes an AMI with the harnesses installed, cutting session
-  creation from minutes to ~60-90s. The same cloud-init runs on stock and
-  baked images — every step is guarded, so baking is optional.
+- `pier bake` (run inside a repo) prebakes that repo's AMI: the harnesses,
+  plus whatever a repo-root `.pier-bake.sh` installs on top — toolchains like
+  pnpm or python that pier deliberately doesn't chase per-ecosystem. The hook
+  runs on the bake instance (agent user, passwordless sudo, no repo checkout
+  yet), so it's for tools, not repo state — deps and migrations stay in
+  `.pier-setup.sh`. Images are per-repo so one project's toolchain never
+  bleeds into another's. The same cloud-init runs on stock and baked images —
+  every default step is guarded, so baking stays optional (hook contents,
+  though, exist only in baked sessions).
 - Your repo reaches the VM GitHub-first: when the base commit is already on
   a GitHub origin, the VM fetches straight from GitHub and only secrets ride
   the tunnel. Local-only commits travel as a thin delta bundle; anything else
@@ -91,9 +97,9 @@ verified spike numbers: [docs/SPEC.md](docs/SPEC.md), [spike/](spike/).
 A baked create is ~60s: ~30s of EC2 boot, then secrets + bootstrap. When a
 create is much slower than that, it's one of two things:
 
-- **No baked AMI** — a stock image installs node, the harnesses, gh, docker
-  (with compose + buildx), and make under cloud-init on every create
-  (minutes). Run `pier bake` once.
+- **No baked AMI for this repo** — a stock image installs node, the
+  harnesses, gh, docker (with compose + buildx), and make under cloud-init on
+  every create (minutes). Run `pier bake` once per repo.
 - **The repo couldn't come from GitHub** — pier then pushes the full git
   history through the SSM tunnel at ~1 MB/s (a 300 MB history ≈ 5 min). The
   create output says which mode you got and why. The fast path needs:

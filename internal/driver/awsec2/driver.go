@@ -40,7 +40,6 @@ type Driver struct {
 	InstanceType string
 	DiskGiB      int
 	Subnet       string // optional: orgs without a default VPC
-	BakedAMI     string
 
 	// StateDir holds per-session ssh keys + known_hosts (the config dir).
 	StateDir string

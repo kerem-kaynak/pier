@@ -100,7 +100,9 @@ func (d *Driver) Exec(ctx context.Context, id string, command string) (string, e
 	return "", errNotImplemented
 }
 
-func (d *Driver) Bake(ctx context.Context) (string, error) { return "", errNotImplemented }
+func (d *Driver) Bake(ctx context.Context, spec driver.BakeSpec) (string, error) {
+	return "", errNotImplemented
+}
 
 func (d *Driver) Headroom(ctx context.Context) (driver.Quota, error) {
 	return driver.Quota{}, errNotImplemented

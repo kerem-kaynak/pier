@@ -194,11 +194,20 @@ only `Driver.SSHTarget` (the raw ssh recipe) and the beacon's port list.
 Targets: **create → attached 60–90s; resume → attached ~30s** (measured
 numbers live in spike/README.md).
 
-1. **`pier bake`** — prebaked per-driver image: agent user, tmux, git, gh,
+1. **`pier bake`** — prebaked **per-repo** image: agent user, tmux, git, gh,
    docker (with compose + buildx — docker.io alone is the bare engine), make,
    claude + codex, headless chromium (playwright build + system
-   deps, for browser MCPs/skills), supervisor preinstalled. ~$1/mo snapshot
-   storage. Offered as the wizard's last step; `pier bake` refreshes it.
+   deps, for browser MCPs/skills), supervisor preinstalled — plus whatever
+   the repo's `.pier-bake.sh` installs on top (run on the bake instance as
+   agent with passwordless sudo, no repo checkout present: toolchains like
+   pnpm/python belong here, repo state in `.pier-setup.sh`; a failed hook
+   aborts the bake). Pier deliberately doesn't chase language ecosystems in
+   the default image — the hook is the user's channel. Images are keyed by
+   repo basename in config (`[aws.baked_amis]`), tagged `pier:repo`; a
+   re-bake supersedes and deregisters the repo's previous image, and
+   teardown sweeps every `pier:managed`-tagged image. ~$1/mo snapshot
+   storage per repo. Offered as the wizard's last step when it runs inside
+   a repo; `pier bake` refreshes it.
 2. **Overlapped create** — launch the instance first; build the git bundle +
    secrets tar while it boots; push and bootstrap the moment sshd answers;
    `.pier-setup.sh` runs asynchronously in a background tmux window while you

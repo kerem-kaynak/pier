@@ -11,7 +11,9 @@ package driver
 
 import (
 	"context"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"time"
 )
 
@@ -49,9 +51,30 @@ type CreateSpec struct {
 	Repo          string        // local repo root; the bundle source
 	Branch        string        // new branch, off BaseRef
 	BaseRef       string        // default: HEAD
+	Image         string        // the repo's baked image ID; "" = stock (guarded cloud-init installs everything)
 	IdleTimeout   time.Duration // 0 = never auto-park
 	UnattendedCap time.Duration // 0 = no runaway cap
 	Progress      func(step string)
+}
+
+// BakeSpec describes one repo's image bake. Images are repo-specific: the
+// default install serves pier and the harnesses; whatever a repo's toolchain
+// needs on top (pnpm, python, ...) comes from its .pier-bake.sh.
+type BakeSpec struct {
+	RepoName string   // repo basename; keys the image to its repo
+	HookPath string   // local path to the repo's .pier-bake.sh; "" = none
+	Replaces []string // images this bake supersedes (previous bake, legacy shared image)
+}
+
+// BakeHook returns the repo's .pier-bake.sh, "" when absent. It runs on the
+// bake instance (agent user, passwordless sudo, no repo checkout — bake
+// predates any session): toolchains belong here, repo state in .pier-setup.sh.
+func BakeHook(repoRoot string) string {
+	p := filepath.Join(repoRoot, ".pier-bake.sh")
+	if fi, err := os.Stat(p); err != nil || !fi.Mode().IsRegular() {
+		return ""
+	}
+	return p
 }
 
 type Check struct {
@@ -119,9 +142,9 @@ type Driver interface {
 	// Exec runs a one-shot command (status reads, push bootstrap) without a TTY.
 	Exec(ctx context.Context, id string, command string) (string, error)
 
-	// Bake builds the prebaked session image (harnesses preinstalled) that
-	// cuts cold create to ~60-90s. Offered as the wizard's last step.
-	Bake(ctx context.Context) (imageID string, err error)
+	// Bake builds one repo's prebaked session image (harnesses + the repo's
+	// .pier-bake.sh toolchains), cutting that repo's cold create to ~60-90s.
+	Bake(ctx context.Context, spec BakeSpec) (imageID string, err error)
 
 	// Headroom reports account capacity (vCPU quota) for the create-time
 	// opportunistic check and the TUI header.

@@ -133,8 +133,13 @@ func (d *Driver) Teardown(ctx context.Context) error {
 		return err
 	}
 
-	if d.BakedAMI != "" {
-		d.deregisterImage(ctx, d.BakedAMI)
+	// Baked images are repo-specific, so there can be several; every one (and
+	// its snapshot) carries pier:managed — sweep by tag, legacy bakes included.
+	amis, _ := d.aws(ctx, "ec2", "describe-images", "--owners", "self",
+		"--filters", "Name=tag:pier:managed,Values=1",
+		"--query", "Images[].ImageId", "--output", "text")
+	for _, ami := range strings.Fields(amis) {
+		d.deregisterImage(ctx, ami)
 	}
 
 	os.RemoveAll(filepath.Join(d.StateDir, "keys"))

@@ -23,8 +23,14 @@ type AWS struct {
 	Region       string `toml:"region"`
 	InstanceType string `toml:"instance_type"`
 	DiskGiB      int    `toml:"disk_gib"`
-	Subnet       string `toml:"subnet"`    // optional: orgs without a default VPC
-	BakedAMI     string `toml:"baked_ami"` // written by `pier bake`
+	Subnet       string `toml:"subnet"` // optional: orgs without a default VPC
+	// BakedAMI is the legacy shared image (pre repo-specific bakes) — still
+	// used as a fallback, deregistered and cleared by the next `pier bake`.
+	BakedAMI string `toml:"baked_ami,omitempty"`
+	// BakedAMIs: repo basename -> image, written by `pier bake` (run from the
+	// repo). Each repo bakes its own image so .pier-bake.sh toolchains don't
+	// bleed across projects.
+	BakedAMIs map[string]string `toml:"baked_amis,omitempty"`
 }
 
 type Secrets struct {

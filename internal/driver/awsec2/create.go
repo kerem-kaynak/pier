@@ -42,7 +42,7 @@ func (d *Driver) Create(ctx context.Context, spec driver.CreateSpec) (sess *driv
 	if err != nil {
 		return nil, err
 	}
-	ami, err := d.resolveAMI(ctx, arch)
+	ami, err := d.resolveAMI(ctx, arch, spec.Image)
 	if err != nil {
 		return nil, err
 	}
@@ -315,9 +315,11 @@ func (d *Driver) archOf(ctx context.Context, itype string) (string, error) {
 	return out, nil
 }
 
-func (d *Driver) resolveAMI(ctx context.Context, arch string) (string, error) {
-	if d.BakedAMI != "" {
-		return d.BakedAMI, nil
+// resolveAMI picks the launch image: the caller's baked AMI (repo-specific,
+// from config) when given, otherwise the stock Ubuntu the SSM parameter names.
+func (d *Driver) resolveAMI(ctx context.Context, arch, image string) (string, error) {
+	if image != "" {
+		return image, nil
 	}
 	return d.aws(ctx, "ssm", "get-parameter",
 		"--name", fmt.Sprintf(amiParamBase, arch),

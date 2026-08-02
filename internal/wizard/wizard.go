@@ -152,20 +152,23 @@ func Run(newDriver func(config.Config) (driver.Driver, error), printAdminOnly bo
 		fmt.Println(line)
 	}
 
-	// 5. offer bake
+	// 5. offer bake — images are repo-specific, so only when the wizard runs
+	// inside a repo; otherwise point at `pier bake` from one.
 	fmt.Println()
-	if yes(in, "bake the session image now? (~5 min once; cuts creates to ~60-90s)", true) {
-		ami, err := drv.Bake(ctx)
+	if repo := gitToplevel(); repo == "" {
+		fmt.Println(ui.Dim.Render("  (images bake per repo: cd <repo> && pier bake — ~5 min once, cuts creates to ~60-90s)"))
+	} else if name := filepath.Base(repo); yes(in, "bake the session image for "+name+" now? (~5 min once; cuts creates to ~60-90s)", true) {
+		ami, err := drv.Bake(ctx, driver.BakeSpec{RepoName: name, HookPath: driver.BakeHook(repo)})
 		if err != nil {
 			return err
 		}
-		cfg.AWS.BakedAMI = ami
+		cfg.AWS.BakedAMIs = map[string]string{name: ami}
 		if err := cfg.Save(); err != nil {
 			return err
 		}
-		fmt.Println("  "+ui.Mark(true), "baked", ami)
+		fmt.Println("  "+ui.Mark(true), "baked", ami, "for", name)
 	} else {
-		fmt.Println(ui.Dim.Render("  (you can run `pier bake` anytime)"))
+		fmt.Println(ui.Dim.Render("  (you can run `pier bake` in any repo, anytime)"))
 	}
 
 	fmt.Println("\n " + ui.OK.Render("done") + " — try: " +
@@ -177,6 +180,16 @@ func Run(newDriver func(config.Config) (driver.Driver, error), printAdminOnly bo
 // question, not six prompts later at groundwork. It also shows which
 // account/ARN is about to be touched. Expired SSO gets the exact login
 // command and an offer to run it inline.
+// gitToplevel is the enclosing repo's root, "" when the wizard runs outside
+// any repo (bake needs one — images are repo-specific).
+func gitToplevel() string {
+	out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
 func checkIdentity(in *bufio.Reader, profile string) (string, error) {
 	sts := func() (string, error) {
 		out, err := exec.Command("aws", "sts", "get-caller-identity",

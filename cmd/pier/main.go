@@ -64,7 +64,7 @@ usage:
   pier setup                first-run wizard (creates cloud groundwork)
       --print-admin           print the admin-runnable setup commands instead
   pier doctor               environment + account checks
-  pier bake                 prebake the session image (~60-90s creates)
+  pier bake                 prebake this repo's session image (~60-90s creates)
   pier teardown             remove all pier groundwork from the account
 `
 
@@ -120,7 +120,6 @@ func newDriver(cfg config.Config) (driver.Driver, error) {
 			InstanceType:  cfg.AWS.InstanceType,
 			DiskGiB:       cfg.AWS.DiskGiB,
 			Subnet:        cfg.AWS.Subnet,
-			BakedAMI:      cfg.AWS.BakedAMI,
 			StateDir:      config.Dir(),
 			Manifest:      cfg.Secrets.Manifest,
 			SessionEnv:    sessionEnv(cfg),
@@ -225,10 +224,16 @@ func cmdNew(args []string) {
 		fatal(fmt.Errorf("--cap: %w", err))
 	}
 
+	// Images are repo-specific; a repo that never baked falls back to the
+	// legacy shared image, then to stock (guarded cloud-init installs live).
+	image := cfg.AWS.BakedAMIs[filepath.Base(repo)]
+	if image == "" {
+		image = cfg.AWS.BakedAMI
+	}
 	fmt.Printf("%s %s\n", ui.Bold.Render("creating "+branch),
 		ui.Dim.Render(fmt.Sprintf("(%s @ %s)", filepath.Base(repo), base)))
 	sess, err := drv.Create(ctx, driver.CreateSpec{
-		Name: branch, Repo: repo, Branch: branch, BaseRef: base,
+		Name: branch, Repo: repo, Branch: branch, BaseRef: base, Image: image,
 		IdleTimeout: idle, UnattendedCap: cap_,
 		Progress: func(step string) { fmt.Println(ui.Accent.Render("  ▸"), step) },
 	})
@@ -766,28 +771,45 @@ func printChecks(checks []driver.Check) bool {
 
 func cmdBake() {
 	cfg, drv := loadDriver()
-	fmt.Println("baking the session image: one temporary instance (~5 min), then an AMI (~$1-2/mo storage)")
-	ami, err := drv.Bake(context.Background())
+	repo := repoRoot() // images are repo-specific: bake from inside the repo it serves
+	name := filepath.Base(repo)
+	hook := driver.BakeHook(repo)
+	line := "baking the session image for " + name + ": one temporary instance (~5 min), then an AMI (~$1-2/mo storage)"
+	if hook != "" {
+		line += "\n  .pier-bake.sh found — its toolchains bake in"
+	}
+	fmt.Println(line)
+	// This bake supersedes the repo's previous image and, once per config,
+	// the legacy shared one.
+	replaces := []string{cfg.AWS.BakedAMIs[name], cfg.AWS.BakedAMI}
+	ami, err := drv.Bake(context.Background(), driver.BakeSpec{
+		RepoName: name, HookPath: hook, Replaces: replaces,
+	})
 	if err != nil {
 		fatal(err)
 	}
-	cfg.AWS.BakedAMI = ami
+	if cfg.AWS.BakedAMIs == nil {
+		cfg.AWS.BakedAMIs = map[string]string{}
+	}
+	cfg.AWS.BakedAMIs[name] = ami
+	cfg.AWS.BakedAMI = ""
 	if err := cfg.Save(); err != nil {
 		fatal(err)
 	}
-	fmt.Printf("baked %s — new sessions now cold-start in ~60-90s\n", ami)
+	fmt.Printf("baked %s — new %s sessions now cold-start in ~60-90s\n", ami, name)
 }
 
 func cmdTeardown() {
 	cfg, drv := loadDriver()
-	if !confirm("remove all pier groundwork (role, instance profile, security group, baked AMI) from the account?", false) {
+	if !confirm("remove all pier groundwork (role, instance profile, security group, baked AMIs) from the account?", false) {
 		return
 	}
 	if err := drv.Teardown(context.Background()); err != nil {
 		fatal(err)
 	}
-	if cfg.AWS.BakedAMI != "" {
+	if cfg.AWS.BakedAMI != "" || len(cfg.AWS.BakedAMIs) > 0 {
 		cfg.AWS.BakedAMI = ""
+		cfg.AWS.BakedAMIs = nil
 		cfg.Save()
 	}
 	fmt.Println("groundwork removed — the account is clean")
