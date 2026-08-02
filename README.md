@@ -1,5 +1,7 @@
 # ⚓ pier
 
+[![CI](https://github.com/kerem-kaynak/pier/actions/workflows/ci.yml/badge.svg)](https://github.com/kerem-kaynak/pier/actions/workflows/ci.yml)
+
 **Give every agent session its own VM. One command up, zero burn when idle.**
 
 Full dev environments on your own AWS account: your repo, your secrets, your
@@ -12,6 +14,7 @@ back in about 20 seconds. Outgrown the box? One command resizes it.
 pier setup          # once: a short wizard sets up the account groundwork
 cd ~/code/myapp
 pier fix-login      # new session: your branch, your secrets, your dev env
+pier proxy          # sessions as hostnames: the dev server at fix-login.pier:3000
 pier                # the TUI: list, attach, create, resize, destroy
 ```
 
@@ -50,7 +53,9 @@ Detach and forget it. An in-VM supervisor parks the VM once the agent goes
 quiet: the instance stops, the disk persists. Attach again and it resumes in
 about 20 seconds with files, branches, and credentials exactly as you left
 them. If the session outgrows its hardware, `pier resize` swaps the instance
-type in one 40-second cycle, disk intact.
+type in one 40-second cycle, disk intact. And to see what the agent built,
+`pier proxy` turns every running session into a hostname:
+`checkout-flow.pier:3000` opens in your browser like localhost.
 
 | Session state | Costs |
 |---|---|
@@ -146,6 +151,11 @@ creating checkout-flow (shop @ HEAD)
   ▸ bootstrap: branch checkout-flow, dirty patch applied, setup running
 session checkout-flow ready
 [tmux opens: claude is installed, authenticated, on your branch]
+
+# ... in a second terminal: the session's ports, one hostname away ...
+$ pier proxy
+proxy up: running sessions resolve as <session>.pier
+# the agent's dev server, live in your browser: http://checkout-flow.pier:3000
 
 # ... detach with C-b d, close the laptop, have dinner ...
 

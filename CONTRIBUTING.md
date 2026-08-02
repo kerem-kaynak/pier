@@ -55,4 +55,22 @@ open decisions — TODOs in code point there. The short version:
 
 Open an issue first for anything beyond a small fix, so design questions get
 settled before code review. PRs should include tests where behavior changed
-and a one-paragraph description of the why.
+and a one-paragraph description of the why. CI runs gofmt, `make test`, and
+`make build` on every PR and must be green.
+
+## Releasing (maintainers)
+
+Releases are tag-driven. Homebrew builds from the source tarball, so there
+are no prebuilt artifacts to manage.
+
+1. Make sure CI is green on main.
+2. Tag and push:
+   `git tag -a vX.Y.Z -m "pier vX.Y.Z" && git push origin vX.Y.Z`.
+   The release workflow re-runs the checks and publishes the GitHub release.
+3. Bump the Homebrew formula in
+   [kerem-kaynak/homebrew-tap](https://github.com/kerem-kaynak/homebrew-tap):
+   point `url` at the new tag and update `sha256`
+   (`curl -sL <tarball-url> | shasum -a 256`).
+
+Versioning is semver. While pier is 0.x, breaking changes bump the minor
+version.

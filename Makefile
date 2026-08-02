@@ -2,8 +2,12 @@
 # arches), so build the supervisors first.
 ASSETS := cmd/pier/assets
 
+# git describe in a checkout; release tarballs have no .git, so the brew
+# formula passes VERSION explicitly.
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+
 build: supervisors
-	go build -o pier ./cmd/pier
+	go build -ldflags "-X main.version=$(VERSION)" -o pier ./cmd/pier
 
 supervisors:
 	GOOS=linux GOARCH=arm64 go build -o $(ASSETS)/pier-supervisor-linux-arm64 ./cmd/pier-supervisor

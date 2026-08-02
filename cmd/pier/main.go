@@ -33,6 +33,9 @@ import (
 //go:embed assets
 var assets embed.FS
 
+// version is stamped by make via -ldflags; "dev" outside a release build.
+var version = "dev"
+
 func supervisorBin(arch string) ([]byte, error) {
 	b, err := assets.ReadFile("assets/pier-supervisor-linux-" + arch)
 	if err != nil {
@@ -64,6 +67,7 @@ const usage = `usage:
   pier doctor               environment + account checks
   pier bake                 prebake this repo's session image (~60-90s creates)
   pier teardown             remove all pier groundwork from the account
+  pier version              print the pier version
 `
 
 func main() {
@@ -97,6 +101,8 @@ func main() {
 		cmdBake()
 	case "teardown":
 		cmdTeardown()
+	case "version", "-v", "--version":
+		fmt.Println("pier " + version)
 	case "help", "-h", "--help":
 		printUsage()
 	default:
