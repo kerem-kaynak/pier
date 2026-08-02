@@ -89,8 +89,10 @@ func (d *Driver) sshStream(ctx context.Context, id, script string) error {
 	return cmd.Run()
 }
 
-func (d *Driver) scpTo(ctx context.Context, id, local, remote string) error {
-	args := append(d.sshOpts(id), local, "agent@"+id+":"+remote)
+// extra flags pass through to scp — "-q" silences the progress meter for
+// pushes too small to warrant one.
+func (d *Driver) scpTo(ctx context.Context, id, local, remote string, extra ...string) error {
+	args := append(append(d.sshOpts(id), extra...), local, "agent@"+id+":"+remote)
 	cmd := exec.CommandContext(ctx, "scp", args...)
 	// scp draws its progress meter only when stdout is a terminal — so big
 	// pushes (the repo bundle) show live progress interactively and stay

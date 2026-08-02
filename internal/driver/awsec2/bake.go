@@ -81,7 +81,7 @@ exit 1`
 	}
 	if spec.HookPath != "" {
 		fmt.Println(ui.Step("running .pier-bake.sh (output follows)"))
-		if err := d.scpTo(ctx, id, spec.HookPath, "/tmp/pier-bake.sh"); err != nil {
+		if err := d.scpTo(ctx, id, spec.HookPath, "/tmp/pier-bake.sh", "-q"); err != nil {
 			return "", err
 		}
 		if err := d.sshStream(ctx, id, "bash /tmp/pier-bake.sh && rm -f /tmp/pier-bake.sh"); err != nil {
