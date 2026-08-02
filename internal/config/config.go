@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -92,4 +94,85 @@ func ParkDuration(s string) (time.Duration, error) {
 		return 0, nil
 	}
 	return time.ParseDuration(s)
+}
+
+// Setting is one field the TUI settings page can edit.
+type Setting struct {
+	Key  string
+	Hint string
+}
+
+// Settings lists the settable keys in display order. Secrets and baked AMIs
+// are deliberately absent: those are managed by `pier setup` and `pier bake`.
+var Settings = []Setting{
+	{"driver", ""},
+	{"idle_timeout", "detached and quiet this long → park"},
+	{"unattended_cap", "parks even while busy"},
+	{"aws.profile", ""},
+	{"aws.region", ""},
+	{"aws.instance_type", "machine for new sessions"},
+	{"aws.disk_gib", ""},
+	{"aws.subnet", "optional"},
+}
+
+// Get returns the current value of a settable key ("" for unknown keys).
+func Get(c Config, key string) string {
+	switch key {
+	case "driver":
+		return c.Driver
+	case "idle_timeout":
+		return c.IdleTimeout
+	case "unattended_cap":
+		return c.UnattendedCap
+	case "aws.profile":
+		return c.AWS.Profile
+	case "aws.region":
+		return c.AWS.Region
+	case "aws.instance_type":
+		return c.AWS.InstanceType
+	case "aws.disk_gib":
+		return strconv.Itoa(c.AWS.DiskGiB)
+	case "aws.subnet":
+		return c.AWS.Subnet
+	}
+	return ""
+}
+
+// Set mutates one whitelisted scalar, validating durations and disk size.
+// Changes apply to new sessions only.
+func Set(c *Config, key, val string) error {
+	switch key {
+	case "driver":
+		c.Driver = val
+	case "idle_timeout", "unattended_cap":
+		if _, err := ParkDuration(val); err != nil {
+			return fmt.Errorf("%s: %v (want a duration like 30m or 8h, or never)", key, err)
+		}
+		if key == "idle_timeout" {
+			c.IdleTimeout = val
+		} else {
+			c.UnattendedCap = val
+		}
+	case "aws.profile":
+		c.AWS.Profile = val
+	case "aws.region":
+		c.AWS.Region = val
+	case "aws.instance_type":
+		c.AWS.InstanceType = val
+	case "aws.disk_gib":
+		n, err := strconv.Atoi(val)
+		if err != nil || n < 8 {
+			return fmt.Errorf("aws.disk_gib: want a whole number of GiB, at least 8 (got %q)", val)
+		}
+		c.AWS.DiskGiB = n
+	case "aws.subnet":
+		c.AWS.Subnet = val
+	default:
+		keys := make([]string, len(Settings))
+		for i, s := range Settings {
+			keys[i] = s.Key
+		}
+		return fmt.Errorf("unknown key %q — settable: %s", key, strings.Join(keys, ", "))
+	}
+	return nil
 }

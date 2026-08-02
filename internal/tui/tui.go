@@ -13,6 +13,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/kerem-kaynak/pier/internal/config"
 	"github.com/kerem-kaynak/pier/internal/driver"
 	"github.com/kerem-kaynak/pier/internal/ui"
 )
@@ -58,6 +59,7 @@ const (
 	modeList mode = iota
 	modeNew
 	modeConfirm
+	modeSettings
 )
 
 type model struct {
@@ -75,6 +77,11 @@ type model struct {
 	watch     int  // poll rounds left after a spawn (until it's listable)
 	frame     int  // spinner frame
 	action    Action
+	// settings page state; cfg loads fresh each time s opens the page
+	cfg      *config.Config
+	setIdx   int
+	editing  bool
+	setInput string
 }
 
 func anyCreating(sessions []driver.Session) bool {
@@ -186,6 +193,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateNew(msg)
 		case modeConfirm:
 			return m.updateConfirm(msg)
+		case modeSettings:
+			return m.updateSettings(msg)
 		}
 		return m.updateList(msg)
 	}
@@ -232,9 +241,65 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m.fetch()
 			}, tickCmd())
 		}
+	case "s":
+		cfg, err := config.Load()
+		if err != nil {
+			m.status, m.statusBad = err.Error(), true
+			return m, nil
+		}
+		m.cfg, m.setIdx, m.editing = &cfg, 0, false
+		m.mode = modeSettings
 	case "r":
 		m.loading = true
 		return m, tea.Batch(m.fetch, tickCmd())
+	}
+	return m, nil
+}
+
+func (m model) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.editing {
+		switch msg.String() {
+		case "esc", "ctrl+c":
+			m.editing = false
+			m.status = ""
+		case "enter":
+			key := config.Settings[m.setIdx].Key
+			if err := config.Set(m.cfg, key, m.setInput); err != nil {
+				m.status, m.statusBad = err.Error(), true
+				return m, nil // stay editing so the value can be fixed
+			}
+			if err := m.cfg.Save(); err != nil {
+				m.status, m.statusBad = err.Error(), true
+				return m, nil
+			}
+			m.editing = false
+			m.status, m.statusBad = key+" saved — applies to new sessions", false
+		case "backspace":
+			if len(m.setInput) > 0 {
+				m.setInput = m.setInput[:len(m.setInput)-1]
+			}
+		default:
+			if msg.Type == tea.KeyRunes && !strings.ContainsRune(string(msg.Runes), ' ') {
+				m.setInput += string(msg.Runes)
+			}
+		}
+		return m, nil
+	}
+	m.status = ""
+	switch msg.String() {
+	case "q", "esc", "ctrl+c":
+		m.mode = modeList
+	case "up", "k":
+		if m.setIdx > 0 {
+			m.setIdx--
+		}
+	case "down", "j":
+		if m.setIdx < len(config.Settings)-1 {
+			m.setIdx++
+		}
+	case "enter":
+		m.editing = true
+		m.setInput = config.Get(*m.cfg, config.Settings[m.setIdx].Key)
 	}
 	return m, nil
 }
@@ -297,6 +362,9 @@ func (m model) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 var spinner = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
 func (m model) View() string {
+	if m.mode == modeSettings {
+		return m.settingsView()
+	}
 	var b strings.Builder
 
 	head := " " + ui.Title.Render("⚓ pier")
@@ -340,7 +408,55 @@ func (m model) View() string {
 				b.WriteString(" " + ui.Accent.Render("▸ "+m.status) + "\n")
 			}
 		}
-		b.WriteString(" " + ui.Keys("enter", "attach", "n", "new", "d", "delete", "p", "pin", "r", "refresh", "q", "quit") + "\n")
+		b.WriteString(" " + ui.Keys("enter", "attach", "n", "new", "d", "delete", "p", "pin", "s", "settings", "r", "refresh", "q", "quit") + "\n")
+	}
+	return b.String()
+}
+
+// settingsView is the s page: every settable config key with inline editing.
+// Values save straight to config.toml and apply to new sessions.
+func (m model) settingsView() string {
+	var b strings.Builder
+	b.WriteString("\n " + ui.Title.Render("⚓ pier settings") + ui.Dim.Render("  "+config.Path()) + "\n\n")
+
+	keyW, valW := 3, 7
+	vals := make([]string, len(config.Settings))
+	for i, s := range config.Settings {
+		vals[i] = config.Get(*m.cfg, s.Key)
+		keyW = max(keyW, len(s.Key))
+		valW = max(valW, len(vals[i]))
+	}
+	for i, s := range config.Settings {
+		marker := "   "
+		key := fmt.Sprintf("%-*s", keyW, s.Key)
+		if i == m.setIdx {
+			marker = " " + ui.Accent.Render("▸") + " "
+			key = ui.Bold.Render(key)
+		}
+		var val string
+		switch {
+		case i == m.setIdx && m.editing:
+			val = m.setInput + ui.Accent.Render("▌")
+		case vals[i] == "":
+			val = ui.Dim.Render(fmt.Sprintf("%-*s", valW, "(unset)"))
+		default:
+			val = fmt.Sprintf("%-*s", valW, vals[i])
+		}
+		fmt.Fprintf(&b, "%s%s  %s  %s\n", marker, key, val, ui.Dim.Render(s.Hint))
+	}
+	b.WriteString("\n " + ui.Dim.Render("secrets and baked images are managed by pier setup and pier bake") + "\n\n")
+
+	if m.status != "" {
+		if m.statusBad {
+			b.WriteString(" " + ui.Bad.Render("! "+m.status) + "\n")
+		} else {
+			b.WriteString(" " + ui.Accent.Render("▸ "+m.status) + "\n")
+		}
+	}
+	if m.editing {
+		b.WriteString(" " + ui.Keys("enter", "save", "esc", "cancel") + "\n")
+	} else {
+		b.WriteString(" " + ui.Keys("enter", "edit", "esc", "back") + "\n")
 	}
 	return b.String()
 }

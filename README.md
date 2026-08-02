@@ -114,7 +114,7 @@ The wizard handles the account groundwork once:
 6. Runs the `pier doctor` checks.
 
 Everything it creates is tagged and removable with `pier teardown`. Change
-any setting later with `pier config set <key> <value>` or `pier config edit`.
+any setting later from inside the TUI. Run `pier` and press `s`.
 
 No IAM permissions? `pier setup --print-admin` prints the handful of
 commands for an admin to run once. The wizard then works with what exists.
@@ -123,7 +123,7 @@ commands for an admin to run once. The wizard then works with what exists.
 
 ```
 pier                      the TUI: sessions live-updating
-                          enter attach · n new · d delete · p pin · r refresh · q quit
+                          enter attach · n new · d delete · p pin · s settings · r refresh · q quit
 pier <branch> [base]      new session off base (default HEAD), then attach
     -d, --detach          create without attaching
     --idle <dur|never>    idle self-park timeout (default 30m)
@@ -138,9 +138,6 @@ pier bake                 prebake this repo's session image (~60-90s creates)
 pier mcp login <session>  one-time browser approvals for OAuth MCP servers
 pier proxy                every running session as <session>.pier (macOS)
 pier port <session> <p>   manual port forward (8080:3000 = local:session)
-pier config               show settings
-    set <key> <value>     change one (aws.instance_type, idle_timeout, ...)
-    edit                  open config.toml in $EDITOR
 pier doctor               environment + account checks
 pier teardown             remove all pier groundwork from the account
 ```

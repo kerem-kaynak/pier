@@ -64,9 +64,6 @@ const usage = `usage:
   pier resize <session> <type>  grow/shrink the VM (running: ~40s park+resume; same arch only)
   pier setup                first-run wizard (creates cloud groundwork)
       --print-admin           print the admin-runnable setup commands instead
-  pier config               show settings (machine size, park timers, ...)
-      set <key> <value>       change one setting
-      edit                    open config.toml in $EDITOR
   pier doctor               environment + account checks
   pier bake                 prebake this repo's session image (~60-90s creates)
   pier teardown             remove all pier groundwork from the account
@@ -96,8 +93,6 @@ func main() {
 		cmdKeep(args[1:])
 	case "resize":
 		cmdResize(args[1:])
-	case "config":
-		cmdConfig(args[1:])
 	case "setup":
 		cmdSetup(args[1:])
 	case "doctor":
@@ -745,136 +740,6 @@ func cmdResize(args []string) {
 		fatal(err)
 	}
 	fmt.Println(ui.OK.Render(s.Name + " is now a " + itype))
-}
-
-// --- config -------------------------------------------------------------------
-
-func cmdConfig(args []string) {
-	if len(args) == 0 {
-		configShow()
-		return
-	}
-	switch args[0] {
-	case "set":
-		if len(args) != 3 {
-			fatal(fmt.Errorf("usage: pier config set <key> <value>"))
-		}
-		cfg, err := config.Load()
-		if err != nil {
-			fatal(err)
-		}
-		if err := applyConfigSet(&cfg, args[1], args[2]); err != nil {
-			fatal(err)
-		}
-		if err := cfg.Save(); err != nil {
-			fatal(err)
-		}
-		fmt.Println(ui.OK.Render(args[1]+" = "+args[2]) + ui.Dim.Render(" — applies to new sessions"))
-	case "edit":
-		configEdit()
-	default:
-		fatal(fmt.Errorf("usage: pier config [set <key> <value> | edit]"))
-	}
-}
-
-func configShow() {
-	cfg, err := config.Load()
-	if err != nil {
-		fatal(err)
-	}
-	fmt.Println("\n " + ui.Title.Render("⚓ pier config") + " " + ui.Dim.Render(config.Path()) + "\n")
-	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	row := func(k, v, note string) {
-		if v == "" {
-			v = ui.Dim.Render("(unset)")
-		}
-		fmt.Fprintf(w, "  %s\t%s\t%s\n", k, v, ui.Dim.Render(note))
-	}
-	row("driver", cfg.Driver, "")
-	row("idle_timeout", cfg.IdleTimeout, "detached and quiet this long → park")
-	row("unattended_cap", cfg.UnattendedCap, "parks even while busy")
-	row("aws.profile", cfg.AWS.Profile, "")
-	row("aws.region", cfg.AWS.Region, "")
-	row("aws.instance_type", cfg.AWS.InstanceType, "machine for new sessions")
-	row("aws.disk_gib", strconv.Itoa(cfg.AWS.DiskGiB), "")
-	row("aws.subnet", cfg.AWS.Subnet, "optional")
-	token := ui.Dim.Render("(not set)")
-	if cfg.Secrets.ClaudeOAuthToken != "" {
-		token = "set " + ui.Dim.Render("(redacted)")
-	}
-	row("secrets.claude_oauth_token", token, "from `claude setup-token`")
-	row("secrets.manifest", fmt.Sprintf("%d entries", len(cfg.Secrets.Manifest)), "$HOME files copied into sessions")
-	for _, m := range cfg.Secrets.Manifest {
-		fmt.Fprintf(w, "  \t%s\t\n", ui.Dim.Render(m))
-	}
-	for repo, ami := range cfg.AWS.BakedAMIs {
-		row("aws.baked_amis."+repo, ami, "written by `pier bake`")
-	}
-	w.Flush()
-	fmt.Println(ui.Dim.Render("\n  change: pier config set <key> <value>   whole file: pier config edit"))
-}
-
-// applyConfigSet mutates one whitelisted scalar; secrets and baked AMIs are
-// deliberately not settable here (edit the file / run `pier bake`).
-func applyConfigSet(cfg *config.Config, key, val string) error {
-	switch key {
-	case "driver":
-		cfg.Driver = val
-	case "idle_timeout", "unattended_cap":
-		if _, err := config.ParkDuration(val); err != nil {
-			return fmt.Errorf("%s: %v (want a duration like 30m or 8h, or never)", key, err)
-		}
-		if key == "idle_timeout" {
-			cfg.IdleTimeout = val
-		} else {
-			cfg.UnattendedCap = val
-		}
-	case "aws.profile":
-		cfg.AWS.Profile = val
-	case "aws.region":
-		cfg.AWS.Region = val
-	case "aws.instance_type":
-		cfg.AWS.InstanceType = val
-	case "aws.disk_gib":
-		n, err := strconv.Atoi(val)
-		if err != nil || n < 8 {
-			return fmt.Errorf("aws.disk_gib: want a whole number of GiB, at least 8 (got %q)", val)
-		}
-		cfg.AWS.DiskGiB = n
-	case "aws.subnet":
-		cfg.AWS.Subnet = val
-	default:
-		return fmt.Errorf("unknown key %q — settable: driver, idle_timeout, unattended_cap, aws.profile, aws.region, aws.instance_type, aws.disk_gib, aws.subnet", key)
-	}
-	return nil
-}
-
-func configEdit() {
-	if _, err := os.Stat(config.Path()); err != nil {
-		fatal(fmt.Errorf("no config at %s — run `pier setup` first", config.Path()))
-	}
-	ed := os.Getenv("VISUAL")
-	if ed == "" {
-		ed = os.Getenv("EDITOR")
-	}
-	if ed == "" {
-		ed = "vi"
-	}
-	c := exec.Command("sh", "-c", ed+" "+config.Path())
-	c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr
-	if err := c.Run(); err != nil {
-		fatal(err)
-	}
-	cfg, err := config.Load()
-	if err != nil {
-		fatal(fmt.Errorf("config no longer parses: %v", err))
-	}
-	for k, v := range map[string]string{"idle_timeout": cfg.IdleTimeout, "unattended_cap": cfg.UnattendedCap} {
-		if _, err := config.ParkDuration(v); err != nil {
-			fmt.Println(ui.Warn.Render("!") + ui.Dim.Render(fmt.Sprintf(" %s %q won't parse: %v", k, v, err)))
-		}
-	}
-	fmt.Println(ui.OK.Render("config saved") + ui.Dim.Render(" — applies to new sessions"))
 }
 
 // --- setup / doctor / bake / teardown ---------------------------------------------

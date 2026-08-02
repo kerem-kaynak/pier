@@ -6,6 +6,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/kerem-kaynak/pier/internal/config"
 	"github.com/kerem-kaynak/pier/internal/driver"
 )
 
@@ -35,6 +36,37 @@ func TestViewStates(t *testing.T) {
 		if !strings.Contains(v, want) {
 			t.Errorf("list view missing %q:\n%s", want, v)
 		}
+	}
+}
+
+// The settings page renders every settable key and rejects bad values while
+// editing (staying in edit so the value can be fixed) without touching disk.
+func TestSettingsPage(t *testing.T) {
+	cfg := config.Default()
+	m := model{mode: modeSettings, cfg: &cfg}
+
+	v := m.View()
+	for _, want := range []string{"pier settings", "idle_timeout", "aws.instance_type", "t4g.medium"} {
+		if !strings.Contains(v, want) {
+			t.Errorf("settings view missing %q:\n%s", want, v)
+		}
+	}
+
+	// Move to idle_timeout, edit, type a bad duration, try to save.
+	m.setIdx = 1 // idle_timeout
+	got, _ := m.updateSettings(tea.KeyMsg{Type: tea.KeyEnter})
+	m = got.(model)
+	if !m.editing || m.setInput != "30m" {
+		t.Fatalf("enter must start editing with the current value, got editing=%v input=%q", m.editing, m.setInput)
+	}
+	m.setInput = "not-a-duration"
+	got, _ = m.updateSettings(tea.KeyMsg{Type: tea.KeyEnter})
+	m = got.(model)
+	if !m.editing || !m.statusBad {
+		t.Errorf("bad duration must stay in edit with an error, got editing=%v status=%q", m.editing, m.status)
+	}
+	if cfg.IdleTimeout != "30m" {
+		t.Errorf("bad value leaked into config: %q", cfg.IdleTimeout)
 	}
 }
 
