@@ -28,6 +28,13 @@ var (
 		MarginLeft(1)
 )
 
+// Step renders a progress-step line: accent chevron, indented under the
+// command's bold header — the shared shape for every long-running command
+// (create, bake, resize).
+func Step(s string) string {
+	return Accent.Render("  ▸") + " " + s
+}
+
 // Mark renders a green ✓ or red ✗.
 func Mark(ok bool) string {
 	if ok {

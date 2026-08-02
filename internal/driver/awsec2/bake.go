@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/kerem-kaynak/pier/internal/driver"
+	"github.com/kerem-kaynak/pier/internal/ui"
 )
 
 // Bake launches a throwaway instance with the exact session user-data, lets
@@ -60,16 +61,26 @@ func (d *Driver) Bake(ctx context.Context, spec driver.BakeSpec) (string, error)
 	os.Rename(d.keyPath("bake")+".pub", d.keyPath(id)+".pub")
 	defer os.Remove(d.keyPath(id))
 	defer os.Remove(d.keyPath(id) + ".pub")
-	fmt.Println("  bake instance", id, "launched — installing harnesses (a few minutes)")
+	fmt.Println(ui.Step("bake instance " + id + " launched — installing harnesses (a few minutes)"))
 
 	if err := d.waitSSH(ctx, id, 240*time.Second); err != nil {
 		return "", err
 	}
-	if _, err := d.sshRun(ctx, id, "sudo cloud-init status --wait >/dev/null && command -v claude && command -v codex && command -v gh"); err != nil {
+	// On failure, say WHICH harness is missing and show the install log tail
+	// — "did not complete" alone sends people digging through a VM that this
+	// function is about to terminate.
+	verify := `sudo cloud-init status --wait >/dev/null
+miss=""
+for c in claude codex gh; do command -v "$c" >/dev/null || miss="$miss $c"; done
+[ -z "$miss" ] && exit 0
+echo "not installed:$miss — cloud-init log tail:"
+sudo tail -n 25 /var/log/cloud-init-output.log
+exit 1`
+	if _, err := d.sshRun(ctx, id, verify); err != nil {
 		return "", fmt.Errorf("harness install did not complete: %w", err)
 	}
 	if spec.HookPath != "" {
-		fmt.Println("  running .pier-bake.sh (output follows)")
+		fmt.Println(ui.Step("running .pier-bake.sh (output follows)"))
 		if err := d.scpTo(ctx, id, spec.HookPath, "/tmp/pier-bake.sh"); err != nil {
 			return "", err
 		}
@@ -82,7 +93,7 @@ func (d *Driver) Bake(ctx context.Context, spec driver.BakeSpec) (string, error)
 		return "", err
 	}
 
-	fmt.Println("  imaging...")
+	fmt.Println(ui.Step("imaging — stop, snapshot, register (a few minutes)"))
 	if _, err := d.aws(ctx, "ec2", "stop-instances", "--instance-ids", id); err != nil {
 		return "", err
 	}

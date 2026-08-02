@@ -348,6 +348,10 @@ runcmd:
   - |
     set -x
     export DEBIAN_FRONTEND=noninteractive
+    # unattended-upgrades can hold the dpkg lock right after boot; wait it
+    # out instead of failing the install (the block deliberately has no set
+    # -e, so a lost race would otherwise skip a harness silently).
+    echo 'DPkg::Lock::Timeout "120";' > /etc/apt/apt.conf.d/90pier
     install -d -m 700 -o agent -g agent /home/agent/.ssh
     grep -qxF '{{PUBKEY}}' /home/agent/.ssh/authorized_keys 2>/dev/null || echo '{{PUBKEY}}' >> /home/agent/.ssh/authorized_keys
     chown agent:agent /home/agent/.ssh/authorized_keys && chmod 600 /home/agent/.ssh/authorized_keys
@@ -355,8 +359,8 @@ runcmd:
     # docker.io is the bare engine: compose and buildx are separate packages
     # (Docker Desktop/OrbStack bundle them, so "docker compose up" is table stakes).
     { command -v docker && command -v make && docker compose version && docker buildx version; } >/dev/null 2>&1 || { apt-get update -y && apt-get install -y tmux git curl jq unzip ca-certificates docker.io docker-compose-v2 docker-buildx make; }
-    command -v node >/dev/null || { curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs; }
-    command -v gh >/dev/null || { curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /usr/share/keyrings/githubcli-archive-keyring.gpg && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list && apt-get update -y && apt-get install -y gh; }
+    command -v node >/dev/null || { curl -fsSL --retry 3 https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs; }
+    command -v gh >/dev/null || { curl -fsSL --retry 3 https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /usr/share/keyrings/githubcli-archive-keyring.gpg && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list && apt-get update -y && apt-get install -y gh; }
     command -v claude >/dev/null || npm install -g @anthropic-ai/claude-code
     command -v codex >/dev/null || npm install -g @openai/codex
     # Headless chromium for browser MCPs/skills (playwright cache + shared libs).

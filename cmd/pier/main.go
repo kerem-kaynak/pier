@@ -41,9 +41,7 @@ func supervisorBin(arch string) ([]byte, error) {
 	return b, nil
 }
 
-const usage = `pier — coding agent sessions as park-when-idle micro-VMs on your own cloud
-
-usage:
+const usage = `usage:
   pier                      interactive session list
   pier <branch> [base]      new session off base (default HEAD), attach
       -d, --detach            create without attaching
@@ -100,10 +98,16 @@ func main() {
 	case "teardown":
 		cmdTeardown()
 	case "help", "-h", "--help":
-		fmt.Print(usage)
+		printUsage()
 	default:
 		cmdNew(args)
 	}
+}
+
+func printUsage() {
+	fmt.Println("\n " + ui.Title.Render("\u2693 pier") +
+		ui.Dim.Render(" \u2014 coding agent sessions as park-when-idle micro-VMs on your own cloud") + "\n")
+	fmt.Print(usage)
 }
 
 func fatal(err error) {
@@ -186,7 +190,7 @@ func cmdNew(args []string) {
 	capS := fs.String("cap", "", "")
 	fs.Parse(flagArgs)
 	if len(pos) < 1 || len(pos) > 2 {
-		fmt.Print(usage)
+		printUsage()
 		os.Exit(1)
 	}
 	branch := pos[0]
@@ -235,7 +239,7 @@ func cmdNew(args []string) {
 	sess, err := drv.Create(ctx, driver.CreateSpec{
 		Name: branch, Repo: repo, Branch: branch, BaseRef: base, Image: image,
 		IdleTimeout: idle, UnattendedCap: cap_,
-		Progress: func(step string) { fmt.Println(ui.Accent.Render("  ▸"), step) },
+		Progress: func(step string) { fmt.Println(ui.Step(step)) },
 	})
 	if err != nil {
 		fatal(err)
@@ -300,7 +304,7 @@ func attach(drv driver.Driver, id string) {
 		// instant failure reads as "not online yet" — and only once: if it
 		// still fails after reachability was confirmed, waiting won't fix it.
 		if retried || time.Since(start) > 15*time.Second {
-			fmt.Fprintln(os.Stderr, "pier: attach:", runErr)
+			fmt.Fprintln(os.Stderr, ui.Bad.Render("pier:"), "attach:", runErr)
 			return
 		}
 		retried = true
@@ -336,7 +340,7 @@ func cmdLS() {
 	}
 	enrich(drv, sessions)
 	if len(sessions) == 0 {
-		fmt.Println("no sessions — start one with `pier <branch>`")
+		fmt.Println(ui.Dim.Render("no sessions — start one with `pier <branch>`"))
 		return
 	}
 	w := tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
@@ -349,10 +353,10 @@ func cmdLS() {
 	}
 	w.Flush()
 	if anyStrained {
-		fmt.Println("\n! strained = sustained cpu/mem pressure — grow with `pier resize <session> <type>`")
+		fmt.Println("\n" + ui.Warn.Render("!") + ui.Dim.Render(" strained = sustained cpu/mem pressure — grow with `pier resize <session> <type>`"))
 	}
 	if anySetupFailed {
-		fmt.Println("\n! setup failed = the setup script exited nonzero — attach and read ~/.pier-setup.log")
+		fmt.Println("\n" + ui.Warn.Render("!") + ui.Dim.Render(" setup failed = the setup script exited nonzero — attach and read ~/.pier-setup.log"))
 	}
 }
 
@@ -659,7 +663,7 @@ func freePort() (int, error) {
 
 func resumeIfParked(drv driver.Driver, s driver.Session) {
 	if s.State == driver.StateParked {
-		fmt.Printf("resuming %s (~20-30s)...\n", s.Name)
+		fmt.Println(ui.Dim.Render("resuming " + s.Name + " (~20-30s)..."))
 		if err := drv.Resume(context.Background(), s.ID); err != nil {
 			fatal(err)
 		}
@@ -687,7 +691,7 @@ func cmdRM(args []string) {
 	if err := drv.Destroy(context.Background(), s.ID); err != nil {
 		fatal(err)
 	}
-	fmt.Printf("destroyed %s\n", s.Name)
+	fmt.Println(ui.OK.Render("destroyed " + s.Name))
 }
 
 func cmdKeep(args []string) {
@@ -699,7 +703,7 @@ func cmdKeep(args []string) {
 	if err := pin(drv, s); err != nil {
 		fatal(err)
 	}
-	fmt.Printf("%s pinned — no idle self-park (unattended cap still applies)\n", s.Name)
+	fmt.Println(ui.OK.Render(s.Name+" pinned") + ui.Dim.Render(" — no idle self-park (unattended cap still applies)"))
 }
 
 // pin disables idle self-park; the supervisor re-reads its conf every tick,
@@ -722,14 +726,14 @@ func cmdResize(args []string) {
 	requireReady(s) // resizing mid-create would stop the instance under its bootstrap
 	itype := args[1]
 	if s.State == driver.StateParked {
-		fmt.Printf("resizing parked %s to %s (stays parked)\n", s.Name, itype)
+		fmt.Printf("%s %s\n", ui.Bold.Render("resizing "+s.Name+" to "+itype), ui.Dim.Render("(parked — stays parked)"))
 	} else {
-		fmt.Printf("resizing %s to %s — parks, resizes, resumes (~40-60s)\n", s.Name, itype)
+		fmt.Printf("%s %s\n", ui.Bold.Render("resizing "+s.Name+" to "+itype), ui.Dim.Render("(parks, resizes, resumes ~40-60s)"))
 	}
 	if err := drv.Resize(context.Background(), s.ID, itype); err != nil {
 		fatal(err)
 	}
-	fmt.Printf("%s is now a %s\n", s.Name, itype)
+	fmt.Println(ui.OK.Render(s.Name + " is now a " + itype))
 }
 
 // --- setup / doctor / bake / teardown ---------------------------------------------
@@ -744,7 +748,7 @@ func cmdSetup(args []string) {
 func cmdDoctor() {
 	cfg, err := config.Load()
 	if err != nil {
-		fmt.Println("! no config yet — checking with defaults (run `pier setup`)")
+		fmt.Println(ui.Warn.Render("!") + ui.Dim.Render(" no config yet — checking with defaults (run `pier setup`)"))
 		cfg = config.Default()
 	}
 	drv, err := newDriver(cfg)
@@ -774,11 +778,11 @@ func cmdBake() {
 	repo := repoRoot() // images are repo-specific: bake from inside the repo it serves
 	name := filepath.Base(repo)
 	hook := driver.BakeHook(repo)
-	line := "baking the session image for " + name + ": one temporary instance (~5 min), then an AMI (~$1-2/mo storage)"
+	fmt.Printf("%s %s\n", ui.Bold.Render("baking "+name),
+		ui.Dim.Render("(one temporary instance ~5 min, then an AMI — ~$1-2/mo storage)"))
 	if hook != "" {
-		line += "\n  .pier-bake.sh found — its toolchains bake in"
+		fmt.Println(ui.Step(".pier-bake.sh found — its toolchains bake in"))
 	}
-	fmt.Println(line)
 	// This bake supersedes the repo's previous image and, once per config,
 	// the legacy shared one.
 	replaces := []string{cfg.AWS.BakedAMIs[name], cfg.AWS.BakedAMI}
@@ -796,7 +800,7 @@ func cmdBake() {
 	if err := cfg.Save(); err != nil {
 		fatal(err)
 	}
-	fmt.Printf("baked %s — new %s sessions now cold-start in ~60-90s\n", ami, name)
+	fmt.Println(ui.OK.Render("baked "+ami) + ui.Dim.Render(" — new "+name+" sessions now cold-start in ~60-90s"))
 }
 
 func cmdTeardown() {
@@ -812,7 +816,7 @@ func cmdTeardown() {
 		cfg.AWS.BakedAMIs = nil
 		cfg.Save()
 	}
-	fmt.Println("groundwork removed — the account is clean")
+	fmt.Println(ui.OK.Render("groundwork removed — the account is clean"))
 }
 
 func confirm(prompt string, def bool) bool {
