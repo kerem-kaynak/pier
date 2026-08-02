@@ -457,6 +457,13 @@ tar -xf /tmp/pier-files.tar -C . --strip-components=1 repo 2>/dev/null || true
 mkdir -p "$HOME/.codex"
 grep -q 'work/{{REPO}}' "$HOME/.codex/config.toml" 2>/dev/null || printf '\n[projects."/home/agent/work/{{REPO}}"]\ntrust_level = "trusted"\n' >> "$HOME/.codex/config.toml"
 
+# Terminal scrollback can't reach into tmux, so without mouse mode a session
+# reads as "can't scroll up". Seed only when no ~/.tmux.conf rode the
+# manifest; must land before the server starts below.
+if [ ! -f "$HOME/.tmux.conf" ]; then
+  printf 'set -g mouse on\nset -g history-limit 50000\n' > "$HOME/.tmux.conf"
+fi
+
 # SSH_AUTH_SOCK points at the attach-refreshed symlink (dangling until the
 # first attach forwards an agent; harmless when it never does).
 tmux has-session -t main 2>/dev/null || tmux new-session -d -s main -e "SSH_AUTH_SOCK=$HOME/.ssh/agent.sock" -c "$HOME/work/{{REPO}}"

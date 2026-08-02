@@ -264,6 +264,7 @@ func detectManifest() []string {
 		".codex/skills",
 		// NOT .codex/plugins: a machine-specific runtime cache (hundreds of
 		// MB); config.toml declares the plugins and codex re-materializes.
+		".tmux.conf", // absent → bootstrap seeds mouse mode + deep history
 	}
 	var found []string
 	for _, c := range candidates {
