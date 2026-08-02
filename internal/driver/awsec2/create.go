@@ -456,11 +456,16 @@ grep -q 'work/{{REPO}}' "$HOME/.codex/config.toml" 2>/dev/null || printf '\n[pro
 tmux has-session -t main 2>/dev/null || tmux new-session -d -s main -e "SSH_AUTH_SOCK=$HOME/.ssh/agent.sock" -c "$HOME/work/{{REPO}}"
 # Background setup, after checkout + patch + .pier-include extras are all in
 # place: the repo's .pier-setup.sh, unless a PIER_SETUP_SCRIPT override rode
-# the tar (outer double quotes expand $setup now, into the single-quoted bash -c).
+# the tar (outer double quotes expand $setup now, into the single-quoted
+# bash -c; \$ defers the rest to run time). The outcome must be impossible to
+# miss — a failed setup used to vanish with its window: ~/.pier-setup.status
+# holds "running" then the exit code (the supervisor beacons it to ls/TUI),
+# the log's last line says done/FAILED, and a failed window renames to
+# setup-failed and stays open instead of closing.
 setup=./.pier-setup.sh
 if [ -f "$HOME/.config/pier/setup.sh" ]; then setup="$HOME/.config/pier/setup.sh"; fi
 if [ -x "$setup" ]; then
-  tmux new-window -d -t main -n setup "bash -c 'set -a; . ~/.config/pier/env 2>/dev/null; set +a; cd ~/work/{{REPO}} && $setup 2>&1 | tee ~/.pier-setup.log'"
+  tmux new-window -d -t main -n setup "bash -c 'set -a; . ~/.config/pier/env 2>/dev/null; set +a; cd ~/work/{{REPO}} || exit 1; echo running > ~/.pier-setup.status; $setup 2>&1 | tee ~/.pier-setup.log; c=\${PIPESTATUS[0]}; echo \$c > ~/.pier-setup.status; if [ \$c -eq 0 ]; then echo \"pier setup: done\" >> ~/.pier-setup.log; else echo \"pier setup: FAILED (exit \$c)\" | tee -a ~/.pier-setup.log; tmux rename-window setup-failed; exec sleep infinity; fi'"
 fi
 
 # Attach gates on this marker: nobody lands in a half-set-up session. Written

@@ -81,7 +81,10 @@ verified spike numbers: [docs/SPEC.md](docs/SPEC.md), [spike/](spike/).
   on first boot (deps, migrations, seeds) — after the checkout, dirty patch,
   and `.pier-include` files are all in place. Set `PIER_SETUP_SCRIPT` to run
   a different script instead (resolved relative to the repo root or `~`; it
-  travels with the create).
+  travels with the create). The outcome is never silent: `pier ls` shows
+  `(setup running)` / `(setup failed)`, the log at `~/.pier-setup.log` ends
+  with `pier setup: done` or `pier setup: FAILED (exit N)`, and a failed
+  window renames to `setup-failed` and stays open instead of vanishing.
 
 ## Start times
 

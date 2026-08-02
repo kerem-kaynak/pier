@@ -117,6 +117,12 @@ func TestRenderBootstrapModes(t *testing.T) {
 		"git remote add origin 'https://github.com/o/r'",
 		"git reset -q --hard abc123",
 		`[projects."/home/agent/work/myrepo"]`, // codex pre-trust
+		// Setup outcome must be written for the beacon and the log, and its
+		// shell variables must survive rendering escaped — they belong to the
+		// tmux window's bash, not to the bootstrap shell.
+		`echo running > ~/.pier-setup.status`,
+		`c=\${PIPESTATUS[0]}`,
+		`pier setup: FAILED (exit \$c)`,
 	} {
 		if !strings.Contains(origin, want) {
 			t.Errorf("origin-mode bootstrap missing %q", want)

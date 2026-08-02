@@ -395,10 +395,19 @@ func stateCell(s driver.Session) string {
 	if s.Strained {
 		cell += " ▲strained"
 	}
+	switch s.Setup {
+	case "running":
+		cell += " ⋯setup"
+	case "failed":
+		cell += " ✗setup"
+	}
 	return cell
 }
 
 func stateStyle(s driver.Session) lipgloss.Style {
+	if s.Setup == "failed" {
+		return ui.Bad
+	}
 	if s.Strained {
 		return ui.Strain
 	}

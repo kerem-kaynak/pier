@@ -336,23 +336,34 @@ func cmdLS() {
 	}
 	w := tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
 	fmt.Fprintln(w, "NAME\tREPO\tSTATE\tAGE\tCOST")
-	anyStrained := false
+	anyStrained, anySetupFailed := false, false
 	for _, s := range sessions {
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", s.Name, s.Repo, stateLabel(s), age(s.LastActive), s.CostNote)
 		anyStrained = anyStrained || s.Strained
+		anySetupFailed = anySetupFailed || s.Setup == "failed"
 	}
 	w.Flush()
 	if anyStrained {
 		fmt.Println("\n! strained = sustained cpu/mem pressure — grow with `pier resize <session> <type>`")
 	}
+	if anySetupFailed {
+		fmt.Println("\n! setup failed = the setup script exited nonzero — attach and read ~/.pier-setup.log")
+	}
 }
 
-// stateLabel renders the state plus the supervisor's strain flag.
+// stateLabel renders the state plus the supervisor's strain and setup flags.
 func stateLabel(s driver.Session) string {
+	l := string(s.State)
 	if s.Strained {
-		return string(s.State) + " (strained)"
+		l += " (strained)"
 	}
-	return string(s.State)
+	switch s.Setup {
+	case "running":
+		l += " (setup running)"
+	case "failed":
+		l += " (setup failed)"
+	}
+	return l
 }
 
 // enrich upgrades StateRunning to working/idle by reading each running
@@ -384,6 +395,7 @@ func enrich(drv driver.Driver, sessions []driver.Session) {
 				Since         time.Time `json:"since"`
 				Bootstrapping bool      `json:"bootstrapping"`
 				Strained      bool      `json:"strained"`
+				Setup         string    `json:"setup"`
 			}
 			if json.Unmarshal([]byte(out), &st) != nil {
 				return
@@ -401,6 +413,7 @@ func enrich(drv driver.Driver, sessions []driver.Session) {
 				s.State = driver.StateIdle
 			}
 			s.Strained = st.Strained
+			s.Setup = st.Setup
 			if !st.Since.IsZero() {
 				s.LastActive = st.Since
 			}

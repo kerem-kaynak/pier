@@ -206,6 +206,12 @@ numbers live in spike/README.md).
    `.pier-include` extras are all in place. `PIER_SETUP_SCRIPT` (wt-style)
    points it at a different script — relative to the repo root or `~` —
    which travels in the tar and takes precedence over the repo's own.
+   The outcome is never silent: the window writes `~/.pier-setup.status`
+   ("running", then the exit code — the supervisor beacons it, so `ls`/TUI
+   show "(setup running)"/"(setup failed)"), ends `~/.pier-setup.log` with
+   `pier setup: done`/`FAILED (exit N)`, and on failure renames itself to
+   `setup-failed` and stays open. The status file lives on the disk, so a
+   failure stays visible across park/resume.
    (On a stock AMI the bootstrap must wait for cloud-init's
    harness install — minutes, exactly once; bake removes it.)
 3. **Origin-first workspace fetch** — the SSM tunnel moves ~1 MB/s, so the

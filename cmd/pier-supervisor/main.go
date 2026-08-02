@@ -56,9 +56,12 @@ type status struct {
 	// Bootstrapping is true until the create's bootstrap writes its marker
 	// (repo fetched, tmux up) — ls/TUI keep showing "creating" meanwhile.
 	// omitempty keeps old-session beacons (no marker ever) reading as false.
-	Bootstrapping bool   `json:"bootstrapping,omitempty"`
-	Strained      bool   `json:"strained,omitempty"`
-	Reason        string `json:"reason,omitempty"`
+	Bootstrapping bool `json:"bootstrapping,omitempty"`
+	Strained      bool `json:"strained,omitempty"`
+	// Setup is the repo setup script's outcome: "running" | "failed", empty
+	// when there is no script (or it succeeded — quiet is the happy path).
+	Setup  string `json:"setup,omitempty"`
+	Reason string `json:"reason,omitempty"`
 }
 
 func main() {
@@ -96,6 +99,7 @@ func main() {
 		last.Listening, last.Tunnels = listening, tunnels
 		last.Bootstrapping = bootstrapping()
 		last.Strained = strained()
+		last.Setup = setupState()
 		writeStatus(last)
 
 		if idleTimeout > 0 && !attached && !busy && now.Sub(idleSince) > idleTimeout {
@@ -189,6 +193,30 @@ func bootstrapping() bool {
 	}
 	_, err = os.Stat(filepath.Join(home, ".pier-bootstrapped"))
 	return err != nil
+}
+
+// setupState reads the setup script's outcome marker, written by the
+// bootstrap's tmux window: "running" while the script runs, its exit code
+// once it finishes. The file lives in $HOME, so unlike this beacon it
+// survives park/resume — a failure stays visible. No marker means no setup
+// script (or a pre-marker session): nothing to report.
+func setupState() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	b, err := os.ReadFile(filepath.Join(home, ".pier-setup.status"))
+	if err != nil {
+		return ""
+	}
+	switch strings.TrimSpace(string(b)) {
+	case "running":
+		return "running"
+	case "0", "":
+		return ""
+	default:
+		return "failed"
+	}
 }
 
 // netSnapshot surveys the session's TCP state in one `ss` pass: which ports

@@ -35,7 +35,8 @@ type Session struct {
 	User       string // derived from cloud caller identity, never configured
 	Driver     string
 	State      State
-	Strained   bool // sustained cpu/mem pressure (supervisor beacon) — resize hint
+	Strained   bool   // sustained cpu/mem pressure (supervisor beacon) — resize hint
+	Setup      string // repo setup script: "" | "running" | "failed" (supervisor beacon)
 	LastActive time.Time
 	CostNote   string // honest money: "$3/mo parked", "$0.03/h running"
 }

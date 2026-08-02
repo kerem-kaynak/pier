@@ -28,9 +28,10 @@ func TestViewStates(t *testing.T) {
 	m.sessions = []driver.Session{
 		{Name: "fix-auth", Repo: "myapp", State: driver.StateWorking, LastActive: time.Now()},
 		{Name: "big-build", Repo: "myapp", State: driver.StateRunning, Strained: true},
+		{Name: "bad-deps", Repo: "myapp", State: driver.StateIdle, Setup: "failed"},
 	}
 	v := m.View()
-	for _, want := range []string{"fix-auth", "big-build", "working", "strained", "NAME"} {
+	for _, want := range []string{"fix-auth", "big-build", "working", "strained", "✗setup", "NAME"} {
 		if !strings.Contains(v, want) {
 			t.Errorf("list view missing %q:\n%s", want, v)
 		}
