@@ -192,7 +192,7 @@ only `Driver.SSHTarget` (the raw ssh recipe) and the beacon's port list.
 ## 7. Speed
 
 Targets: **create → attached 60–90s; resume → attached ~30s** (measured
-numbers live in spike/README.md).
+numbers in §14).
 
 1. **`pier bake`** — prebaked **per-repo** image: agent user, tmux, git, gh,
    docker (with compose + buildx — docker.io alone is the bare engine), make,
@@ -373,15 +373,18 @@ hibernate/suspend park, k8s driver, `ls --all`, Windows.
 
 ## 14. Load-bearing bets → spikes
 
+The throwaway spike scripts that produced these numbers have been retired;
+the verdicts stand as the record.
+
 | bet                                                        | spike       | status   |
 |------------------------------------------------------------|-------------|----------|
-| `shutdown -h now` parks (EC2 → stopped, not terminated)    | spike/aws.sh | **PASS** — stopped in 44s |
-| boot → SSM-ready time supports 60–90s TTFI                 | spike/aws.sh | **PASS** — 29s stock AMI |
-| stop → start → ready ≈ 30s resume                          | spike/aws.sh | **PASS** — 21s |
-| SSM interactive TTY feels like ssh (manual, `--keep` mode) | spike/aws.sh | superseded — v1 uses real ssh over the SSM tunnel |
-| GCE: same four on IAP + TERMINATED-with-disks              | spike/gcp.sh | parked with the GCP driver |
+| `shutdown -h now` parks (EC2 → stopped, not terminated)    | aws spike | **PASS** — stopped in 44s |
+| boot → SSM-ready time supports 60–90s TTFI                 | aws spike | **PASS** — 29s stock AMI |
+| stop → start → ready ≈ 30s resume                          | aws spike | **PASS** — 21s |
+| SSM interactive TTY feels like ssh (manual, `--keep` mode) | aws spike | superseded — v1 uses real ssh over the SSM tunnel |
+| GCE: same four on IAP + TERMINATED-with-disks              | gcp spike | parked with the GCP driver |
 
-Measured 2026-07-30 in eu-central-1; details in spike/README.md.
+Measured 2026-07-30 in eu-central-1.
 
 Full v1 E2E (same day, same region, t4g.medium): stock create → ready 42s
 (harnesses finish async under cloud-init); idle self-park fired at

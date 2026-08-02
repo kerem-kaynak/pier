@@ -16,7 +16,7 @@ pier attach payments   # reattach anytime; parked sessions resume in ~20-30s
 ```
 
 **Status: v1 implemented (AWS), E2E hardening in progress.** Design and
-verified spike numbers: [docs/SPEC.md](docs/SPEC.md), [spike/](spike/).
+verified spike numbers: [docs/SPEC.md](docs/SPEC.md).
 
 ## How it works
 
