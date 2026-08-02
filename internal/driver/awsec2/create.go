@@ -858,7 +858,7 @@ func envFilesNotCarried(repoRoot string, carried []string) []string {
 	return miss
 }
 
-// setupScriptOverride resolves PIER_SETUP_SCRIPT (wt-style): the named
+// setupScriptOverride resolves PIER_SETUP_SCRIPT: the named
 // script travels in the tar and the bootstrap runs it instead of the repo's
 // ./.pier-setup.sh. Relative paths resolve against the repo root, ~ against
 // home. A set-but-missing path returns a warning, not an error — a typo'd

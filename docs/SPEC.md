@@ -212,7 +212,7 @@ numbers live in spike/README.md).
    secrets tar while it boots; push and bootstrap the moment sshd answers;
    `.pier-setup.sh` runs asynchronously in a background tmux window while you
    type to the agent — it starts only after the checkout, dirty patch, and
-   `.pier-include` extras are all in place. `PIER_SETUP_SCRIPT` (wt-style)
+   `.pier-include` extras are all in place. `PIER_SETUP_SCRIPT`
    points it at a different script — relative to the repo root or `~` —
    which travels in the tar and takes precedence over the repo's own.
    The outcome is never silent: the window writes `~/.pier-setup.status`
