@@ -113,7 +113,8 @@ The wizard handles the account groundwork once:
 5. Offers to bake an image for the current repo.
 6. Runs the `pier doctor` checks.
 
-Everything it creates is tagged and removable with `pier teardown`.
+Everything it creates is tagged and removable with `pier teardown`. Change
+any setting later with `pier config set <key> <value>` or `pier config edit`.
 
 No IAM permissions? `pier setup --print-admin` prints the handful of
 commands for an admin to run once. The wizard then works with what exists.
@@ -137,6 +138,9 @@ pier bake                 prebake this repo's session image (~60-90s creates)
 pier mcp login <session>  one-time browser approvals for OAuth MCP servers
 pier proxy                every running session as <session>.pier (macOS)
 pier port <session> <p>   manual port forward (8080:3000 = local:session)
+pier config               show settings
+    set <key> <value>     change one (aws.instance_type, idle_timeout, ...)
+    edit                  open config.toml in $EDITOR
 pier doctor               environment + account checks
 pier teardown             remove all pier groundwork from the account
 ```
