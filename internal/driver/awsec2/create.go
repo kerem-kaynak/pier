@@ -121,9 +121,33 @@ func (d *Driver) Create(ctx context.Context, spec driver.CreateSpec) (sess *driv
 			return nil, fmt.Errorf("bundling %s: %w", spec.Repo, err)
 		}
 	}
+	// Dirty tracked state travels only when the session's base IS the
+	// laptop's HEAD — branching a session off another commit and grafting
+	// today's edits onto it would be a lie about what that base contained.
+	patch := ""
+	if head, _ := gitOut(spec.Repo, "rev-parse", "HEAD"); head == sha {
+		p := filepath.Join(work, "pier-dirty.patch")
+		switch ok, err := dirtyPatch(spec.Repo, p); {
+		case err != nil:
+			return nil, err
+		case ok:
+			patch = p
+		}
+	}
+	setupSrc, warn := setupScriptOverride(spec.Repo)
+	if warn != "" {
+		progress(warn)
+	}
 	filesTar := filepath.Join(work, "pier-files.tar")
-	if err := buildFilesTar(filesTar, d.Manifest, spec.Repo, d.SessionEnv); err != nil {
+	if err := buildFilesTar(filesTar, d.Manifest, spec.Repo, d.SessionEnv, setupSrc); err != nil {
 		return nil, err
+	}
+	if miss := envFilesNotCarried(spec.Repo, pierIncludeFiles(spec.Repo)); len(miss) > 0 {
+		name := miss[0]
+		if len(miss) > 1 {
+			name += fmt.Sprintf(" +%d more", len(miss)-1)
+		}
+		progress("not carrying " + name + " — env files travel only when .pier-include lists them")
 	}
 	supPath := filepath.Join(work, "pier-supervisor")
 	if err := os.WriteFile(supPath, supervisor, 0o755); err != nil {
@@ -153,6 +177,10 @@ func (d *Driver) Create(ctx context.Context, spec driver.CreateSpec) (sess *driv
 	default:
 		progress(fmt.Sprintf("pushing workspace (%s — full history; %s)", fileMB(bundle), why))
 		pushes = append(pushes, struct{ local, remote string }{bundle, "/tmp/pier.bundle"})
+	}
+	if patch != "" {
+		progress("carrying your uncommitted edits to tracked files")
+		pushes = append(pushes, struct{ local, remote string }{patch, "/tmp/pier-dirty.patch"})
 	}
 	home, _ := os.UserHomeDir()
 	if names := OAuthRemotes(home, spec.Repo); len(names) > 0 {
@@ -405,6 +433,9 @@ case '{{MODE}}' in
   *)      git fetch -q /tmp/pier.bundle refs/pier/export ;;
 esac
 git reset -q --hard {{SHA}}
+# Uncommitted edits to tracked files, exactly as the laptop had them (a
+# failed apply fails the create — better than silently missing work).
+if [ -f /tmp/pier-dirty.patch ]; then git apply /tmp/pier-dirty.patch; fi
 tar -xf /tmp/pier-files.tar -C . --strip-components=1 repo 2>/dev/null || true
 
 # Codex records folder trust in config.toml; pre-trust the workdir the user
@@ -415,8 +446,13 @@ grep -q 'work/{{REPO}}' "$HOME/.codex/config.toml" 2>/dev/null || printf '\n[pro
 # SSH_AUTH_SOCK points at the attach-refreshed symlink (dangling until the
 # first attach forwards an agent; harmless when it never does).
 tmux has-session -t main 2>/dev/null || tmux new-session -d -s main -e "SSH_AUTH_SOCK=$HOME/.ssh/agent.sock" -c "$HOME/work/{{REPO}}"
-if [ -x ./.pier-setup.sh ]; then
-  tmux new-window -d -t main -n setup "bash -c 'set -a; . ~/.config/pier/env 2>/dev/null; set +a; cd ~/work/{{REPO}} && ./.pier-setup.sh 2>&1 | tee ~/.pier-setup.log'"
+# Background setup, after checkout + patch + .pier-include extras are all in
+# place: the repo's .pier-setup.sh, unless a PIER_SETUP_SCRIPT override rode
+# the tar (outer double quotes expand $setup now, into the single-quoted bash -c).
+setup=./.pier-setup.sh
+if [ -f "$HOME/.config/pier/setup.sh" ]; then setup="$HOME/.config/pier/setup.sh"; fi
+if [ -x "$setup" ]; then
+  tmux new-window -d -t main -n setup "bash -c 'set -a; . ~/.config/pier/env 2>/dev/null; set +a; cd ~/work/{{REPO}} && $setup 2>&1 | tee ~/.pier-setup.log'"
 fi
 
 # Attach gates on this marker: nobody lands in a half-set-up session. Written
@@ -424,7 +460,7 @@ fi
 # .pier-setup.sh, which runs async in its tmux window.
 touch "$HOME/.pier-bootstrapped"
 
-rm -f /tmp/pier.bundle /tmp/pier-files.tar /tmp/pier-supervisor /tmp/pier-bootstrap.sh
+rm -f /tmp/pier.bundle /tmp/pier-files.tar /tmp/pier-dirty.patch /tmp/pier-supervisor /tmp/pier-bootstrap.sh
 echo bootstrapped
 `
 
@@ -708,87 +744,28 @@ func portableMCP(servers map[string]json.RawMessage) map[string]json.RawMessage 
 	return out
 }
 
-// repoLooseFiles lists the working-tree files (repo-relative) that ride the
-// tar on top of the git checkout, so a session gets the repo as it sits on
-// the laptop, not just its committed state.
-//
-// A repo-root .pier-files takes over the selection entirely when present:
-// one path or glob per line (relative to the root; * ? [] per segment, no
-// **), # comments. A listed path travels as it sits on disk — tracked,
-// untracked, or ignored, no distinction — and a directory line carries
-// everything under it. The tar extracts after the checkout, so listed
-// content wins.
-//
-// Without the file, the default: every untracked file (work in progress, at
-// any depth) plus the ignored .env* (monorepos keep them per-app). Other
-// ignored files deliberately stay out — that's node_modules, .venv, dist:
-// regenerable bulk a 1 MB/s tunnel can't justify — listed with --directory
-// so wholly-ignored dirs collapse to one entry and their .env fixtures
-// vanish with them. Tracked files arrive with the fetch (uncommitted edits
-// to them don't travel: sessions branch from HEAD). Git trouble falls back
-// to a root glob.
-func repoLooseFiles(repoRoot string) []string {
-	if pats, ok := pierFilesPatterns(repoRoot); ok {
-		return matchPierFiles(repoRoot, pats)
-	}
-	var out []string
-	for _, l := range []struct {
-		args    []string
-		envOnly bool
-	}{
-		{[]string{"ls-files", "-z", "-o", "--exclude-standard"}, false},
-		{[]string{"ls-files", "-z", "-o", "-i", "--exclude-standard", "--directory"}, true},
-	} {
-		listing, err := gitOut(repoRoot, l.args...)
-		if err != nil {
-			gl, _ := filepath.Glob(filepath.Join(repoRoot, ".env*"))
-			out = out[:0]
-			for _, p := range gl {
-				out = append(out, filepath.Base(p))
-			}
-			return out
-		}
-		for _, p := range strings.Split(listing, "\x00") {
-			if p == "" || strings.HasSuffix(p, "/") {
-				continue
-			}
-			if l.envOnly {
-				if ok, _ := filepath.Match(".env*", filepath.Base(p)); !ok {
-					continue
-				}
-			}
-			out = append(out, p)
-		}
-	}
-	sort.Strings(out)
-	return out
-}
-
-// pierFilesPatterns reads the repo's .pier-files; ok=false means the file is
-// absent (use the default selection). An empty or all-comment file is an
-// explicit "nothing travels". Non-local lines (absolute, ..) are dropped.
-func pierFilesPatterns(repoRoot string) (pats []string, ok bool) {
-	b, err := os.ReadFile(filepath.Join(repoRoot, ".pier-files"))
+// pierIncludeFiles lists the repo files (repo-relative) named by a repo-root
+// .pier-include — the ONLY loose-file channel: nothing untracked or ignored
+// ships without a line here (tracked content arrives via the fetch, dirty
+// edits to it via the patch). One path or glob per line (relative to the
+// root; * ? [] per segment, no **), # comments, a directory line carries its
+// whole subtree. A listed path travels as it sits on disk — no git-status
+// distinction — and the tar extracts after checkout + patch, so listed
+// content wins. No file, or an empty one, means nothing extra travels.
+func pierIncludeFiles(repoRoot string) []string {
+	b, err := os.ReadFile(filepath.Join(repoRoot, ".pier-include"))
 	if err != nil {
-		return nil, false
+		return nil
 	}
+	seen := map[string]bool{}
 	for _, line := range strings.Split(string(b), "\n") {
 		line = strings.TrimSuffix(strings.TrimSpace(line), "/")
 		if line == "" || strings.HasPrefix(line, "#") || !filepath.IsLocal(line) {
 			continue
 		}
-		pats = append(pats, line)
-	}
-	return pats, true
-}
-
-// matchPierFiles resolves .pier-files lines against the disk. WalkDir on a
-// glob match handles files and directories uniformly (a file path walks as
-// just itself); .git and non-regular entries are skipped.
-func matchPierFiles(repoRoot string, pats []string) []string {
-	seen := map[string]bool{}
-	for _, pat := range pats {
-		matches, _ := filepath.Glob(filepath.Join(repoRoot, pat))
+		// WalkDir on a glob match handles files and directories uniformly
+		// (a file path walks as just itself); .git and non-regular skipped.
+		matches, _ := filepath.Glob(filepath.Join(repoRoot, line))
 		for _, m := range matches {
 			_ = filepath.WalkDir(m, func(path string, e fs.DirEntry, err error) error {
 				if err != nil {
@@ -818,11 +795,82 @@ func matchPierFiles(repoRoot string, pats []string) []string {
 	return out
 }
 
+// dirtyPatch captures uncommitted work on tracked files — edits, staged
+// adds, deletions, binary-safe — as one patch the bootstrap applies right
+// after checkout, so the session's working tree starts exactly as the
+// laptop's (staged edits arrive unstaged). Untracked files are
+// .pier-include's business. A clean tree writes nothing.
+func dirtyPatch(repoRoot, dst string) (bool, error) {
+	out, err := exec.Command("git", "-C", repoRoot, "diff", "--binary", "HEAD").Output()
+	if err != nil {
+		return false, fmt.Errorf("git diff: %w", err)
+	}
+	if len(strings.TrimSpace(string(out))) == 0 {
+		return false, nil
+	}
+	return true, os.WriteFile(dst, out, 0o600)
+}
+
+// envFilesNotCarried is the fail-loud affordance for "no default env
+// transfer": env files the tree has (untracked or ignored, any depth) that
+// the tar is NOT carrying. A session whose app dies on a missing env file
+// should have said so at create. Wholly-ignored dirs collapse (--directory)
+// so node_modules fixtures don't count; tracked ones arrive with the fetch.
+func envFilesNotCarried(repoRoot string, carried []string) []string {
+	have := map[string]bool{}
+	for _, p := range carried {
+		have[p] = true
+	}
+	var miss []string
+	for _, args := range [][]string{
+		{"ls-files", "-z", "-o", "--exclude-standard"},
+		{"ls-files", "-z", "-o", "-i", "--exclude-standard", "--directory"},
+	} {
+		listing, err := gitOut(repoRoot, args...)
+		if err != nil {
+			return nil
+		}
+		for _, p := range strings.Split(listing, "\x00") {
+			if p == "" || strings.HasSuffix(p, "/") {
+				continue
+			}
+			if ok, _ := filepath.Match(".env*", filepath.Base(p)); ok && !have[p] {
+				miss = append(miss, p)
+			}
+		}
+	}
+	sort.Strings(miss)
+	return miss
+}
+
+// setupScriptOverride resolves PIER_SETUP_SCRIPT (wt-style): the named
+// script travels in the tar and the bootstrap runs it instead of the repo's
+// ./.pier-setup.sh. Relative paths resolve against the repo root, ~ against
+// home. A set-but-missing path returns a warning, not an error — a typo'd
+// env var shouldn't brick creates, but it must not be silent either.
+func setupScriptOverride(repoRoot string) (path, warn string) {
+	v := os.Getenv("PIER_SETUP_SCRIPT")
+	if v == "" {
+		return "", ""
+	}
+	if strings.HasPrefix(v, "~/") {
+		home, _ := os.UserHomeDir()
+		v = filepath.Join(home, v[2:])
+	} else if !filepath.IsAbs(v) {
+		v = filepath.Join(repoRoot, v)
+	}
+	if fi, err := os.Stat(v); err != nil || !fi.Mode().IsRegular() {
+		return "", "PIER_SETUP_SCRIPT: " + v + " not found — running the repo's .pier-setup.sh (if any) instead"
+	}
+	return v, ""
+}
+
 // buildFilesTar packs, into one tar: manifest files/dirs under $HOME (prefix
-// home/), the repo's loose files — untracked plus ignored .env*, relative
-// paths kept (prefix repo/) — and a generated home/.config/pier/env with the
-// session tokens. The bootstrap extracts the two prefixes to the right places.
-func buildFilesTar(dst string, manifest []string, repoRoot string, env map[string]string) error {
+// home/), the repo files named by .pier-include (relative paths kept, prefix
+// repo/), the PIER_SETUP_SCRIPT override (as home/.config/pier/setup.sh),
+// and a generated home/.config/pier/env with the session tokens. The
+// bootstrap extracts the two prefixes to the right places.
+func buildFilesTar(dst string, manifest []string, repoRoot string, env map[string]string, setupSrc string) error {
 	f, err := os.Create(dst)
 	if err != nil {
 		return err
@@ -886,12 +934,19 @@ func buildFilesTar(dst string, manifest []string, repoRoot string, env map[strin
 		}
 	}
 
-	for _, rel := range repoLooseFiles(repoRoot) {
+	for _, rel := range pierIncludeFiles(repoRoot) {
 		p := filepath.Join(repoRoot, rel)
 		if fi, err := os.Stat(p); err == nil && fi.Mode().IsRegular() {
 			if err := addFile(p, "repo/"+rel, fi.Mode()); err != nil {
 				return err
 			}
+		}
+	}
+
+	if setupSrc != "" {
+		// 0755 regardless of the source's mode: the bootstrap gates on -x.
+		if err := addFile(setupSrc, "home/.config/pier/setup.sh", 0o755); err != nil {
+			return err
 		}
 	}
 

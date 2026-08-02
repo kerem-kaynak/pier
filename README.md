@@ -39,14 +39,15 @@ verified spike numbers: [docs/SPEC.md](docs/SPEC.md), [spike/](spike/).
 - Your repo reaches the VM GitHub-first: when the base commit is already on
   a GitHub origin, the VM fetches straight from GitHub and only secrets ride
   the tunnel. Local-only commits travel as a thin delta bundle; anything else
-  falls back to a full-history git bundle. Untracked files and per-app
-  `.env*` ride along too — the session gets your working tree as it sits,
-  minus regenerable ignored bulk (node_modules) and uncommitted edits to
-  tracked files (sessions branch from HEAD). A repo-root `.pier-files`
-  (one path or glob per line) takes over that selection when present:
-  listed paths travel as they sit on disk, no git-status distinction.
+  falls back to a full-history git bundle. Uncommitted edits to tracked
+  files ride along as one patch — the session's working tree starts as
+  yours sits, staged edits arriving unstaged. Untracked and ignored files
+  travel only when a repo-root `.pier-include` lists them (one path or glob
+  per line, matched against the disk, no git-status distinction). Nothing
+  loose — env files included — ships by default; the create prints which
+  env files it is *not* carrying.
 - Secrets travel as an explicit manifest (`~/.claude`, `~/.codex`, the
-  repo's untracked and `.env*` files) plus tokens (`gh auth token`,
+  repo files your `.pier-include` lists) plus tokens (`gh auth token`,
   `claude setup-token`).
 - MCP servers, agents, skills, and plugins travel with their config — auth
   included when it's static (env vars, API-key headers). OAuth-backed remote
@@ -74,7 +75,10 @@ verified spike numbers: [docs/SPEC.md](docs/SPEC.md), [spike/](spike/).
   early just waits for setup to complete — you never land in a session
   before its repo does, and a create that fails cleans up its own instance.
 - If the repo has a `.pier-setup.sh`, it runs asynchronously in a tmux window
-  on first boot (deps, migrations, seeds).
+  on first boot (deps, migrations, seeds) — after the checkout, dirty patch,
+  and `.pier-include` files are all in place. Set `PIER_SETUP_SCRIPT` to run
+  a different script instead (resolved relative to the repo root or `~`; it
+  travels with the create).
 
 ## Start times
 

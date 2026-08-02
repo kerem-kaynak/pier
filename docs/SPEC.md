@@ -198,7 +198,11 @@ numbers live in spike/README.md).
 2. **Overlapped create** — launch the instance first; build the git bundle +
    secrets tar while it boots; push and bootstrap the moment sshd answers;
    `.pier-setup.sh` runs asynchronously in a background tmux window while you
-   type to the agent. (On a stock AMI the bootstrap must wait for cloud-init's
+   type to the agent — it starts only after the checkout, dirty patch, and
+   `.pier-include` extras are all in place. `PIER_SETUP_SCRIPT` (wt-style)
+   points it at a different script — relative to the repo root or `~` —
+   which travels in the tar and takes precedence over the repo's own.
+   (On a stock AMI the bootstrap must wait for cloud-init's
    harness install — minutes, exactly once; bake removes it.)
 3. **Origin-first workspace fetch** — the SSM tunnel moves ~1 MB/s, so the
    repo avoids it whenever possible. If the base commit is reachable from a
@@ -216,15 +220,17 @@ numbers live in spike/README.md).
    because a persistent capability needs a persistent credential. The
    full-history bundle over SSM remains the universal fallback: no origin,
    non-GitHub host, never-pushed history, all preflights failed. Whatever the
-   mode, the repo's **loose files** — every untracked file plus the ignored
-   `.env*` at any depth — ride the secrets tar, so the session gets the
-   working tree as it sits on the laptop. Two deliberate exceptions:
-   uncommitted edits to tracked files (sessions branch from HEAD) and
-   ignored bulk (node_modules, .venv — the VM regenerates those). A
-   repo-root **`.pier-files`** replaces that selection entirely when
-   present: one path or glob per line, matched against the disk with no
-   git-status distinction — listed = travels. The tar extracts after the
-   checkout, so listed content wins.
+   mode, **uncommitted edits to tracked files** ride along too, as one
+   binary-safe patch (`git diff HEAD`) applied right after the checkout — the
+   session's working tree starts exactly as the laptop's, staged edits
+   arriving unstaged. (Only when the session's base is the laptop's HEAD; a
+   session created off another commit carries no dirty state.) Untracked and
+   ignored files travel **only** when a repo-root **`.pier-include`** names
+   them: one path or glob per line, matched against the disk with no
+   git-status distinction — listed = travels, extracted after checkout +
+   patch so listed content wins. Nothing loose ships by default — no env
+   auto-transfer; the create prints which env files it is *not* carrying so
+   a missing one fails loud at create, not deep in `make dev`.
 
 Cut for v1 (numbers didn't justify the moving parts): warm pools, mid-create
 quota polling.
@@ -234,10 +240,10 @@ quota polling.
 One-way copy from the laptop at create; never stored anywhere else, never
 written back. Sources (wizard-detected, confirmed into the manifest):
 
-- repo loose files: every untracked file plus the ignored `.env*` at any
-  depth (monorepos keep them per-app) — tracked files arrive with the fetch,
-  other ignored paths are rebuilt on the VM; a repo-root `.pier-files`
-  (path or glob per line) replaces this selection entirely when present
+- repo files named by a repo-root `.pier-include` (path or glob per line) —
+  the **only** loose-file channel: nothing untracked or ignored ships without
+  a line here (env files included; the create warns about ones left behind).
+  Tracked content arrives with the fetch, dirty edits to it via the patch.
 - `~/.codex/` (auth.json, config.toml)
 - `~/.claude/` settings, `CLAUDE.md`, agents
 - a GitHub credential for git push/PRs and private-repo fetch: `gh auth

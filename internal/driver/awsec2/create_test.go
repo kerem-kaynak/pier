@@ -157,11 +157,11 @@ func TestRenderUserDataGuards(t *testing.T) {
 	}
 }
 
-// A session gets the working tree as it sits: every untracked file plus the
-// ignored .env* at any depth (monorepos keep them per-app). Wholly-ignored
-// dirs (node_modules), other ignored files, and tracked files (they arrive
-// with the fetch) stay out.
-func TestRepoLooseFiles(t *testing.T) {
+// Nothing loose ships by default — but the create warns about env files it
+// is NOT carrying (untracked or ignored, any depth), minus wholly-ignored
+// dirs (node_modules fixtures), tracked ones (they arrive with the fetch),
+// and whatever .pier-include already carries.
+func TestEnvFilesNotCarried(t *testing.T) {
 	root := t.TempDir()
 	git := func(args ...string) {
 		t.Helper()
@@ -181,28 +181,84 @@ func TestRepoLooseFiles(t *testing.T) {
 	}
 	git("init", "-q")
 	write(".gitignore", ".env\n.env.local\nnode_modules/\n*.log\n")
-	write(".env", "ROOT=1\n")                    // ignored env — travels
-	write("apps/api/.env", "API=1\n")            // ignored env, nested — travels
-	write("apps/api/.env.local", "LOCAL=1\n")    // ignored env, nested — travels
-	write("apps/api/main.go", "package main\n")  // untracked — travels
-	write("notes.md", "wip\n")                   // untracked, root — travels
+	write(".env", "ROOT=1\n")                    // ignored env — warned about
+	write("apps/api/.env", "API=1\n")            // ignored env, nested — warned about
+	write("apps/api/.env.local", "LOCAL=1\n")    // ignored env, nested — warned about
+	write("apps/api/main.go", "package main\n")  // untracked non-env — not the hint's business
 	write("apps/api/.env.example", "X=\n")       // tracked below — arrives with the fetch
 	write("node_modules/dep/.env", "FIXTURE=\n") // inside wholly-ignored dir
-	write("debug.log", "x\n")                    // ignored non-env — stays home
+	write("debug.log", "x\n")                    // ignored non-env
 	git("add", ".gitignore", "apps/api/.env.example")
 
-	got := repoLooseFiles(root)
-	want := []string{".env", "apps/api/.env", "apps/api/.env.local", "apps/api/main.go", "notes.md"}
+	if files := pierIncludeFiles(root); files != nil {
+		t.Errorf("no .pier-include must mean nothing loose ships, got %v", files)
+	}
+	got := envFilesNotCarried(root, nil)
+	want := []string{".env", "apps/api/.env", "apps/api/.env.local"}
 	if !slices.Equal(got, want) {
-		t.Errorf("repoLooseFiles = %v, want %v", got, want)
+		t.Errorf("envFilesNotCarried = %v, want %v", got, want)
+	}
+	got = envFilesNotCarried(root, []string{"apps/api/.env"})
+	want = []string{".env", "apps/api/.env.local"}
+	if !slices.Equal(got, want) {
+		t.Errorf("envFilesNotCarried minus carried = %v, want %v", got, want)
 	}
 }
 
-// A .pier-files takes over the selection entirely: lines are paths or globs,
+// Uncommitted work on tracked files — edits and staged adds — travels as one
+// patch; untracked files don't (that's .pier-include's channel). A clean
+// tree writes no patch at all.
+func TestDirtyPatch(t *testing.T) {
+	root := t.TempDir()
+	git := func(args ...string) {
+		t.Helper()
+		if out, err := exec.Command("git", append([]string{"-C", root}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	write := func(rel, content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(root, rel), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git("init", "-q")
+	write("a.txt", "one\n")
+	git("add", "a.txt")
+	git("-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "-qm", "init")
+
+	dst := filepath.Join(t.TempDir(), "dirty.patch")
+	if ok, err := dirtyPatch(root, dst); err != nil || ok {
+		t.Fatalf("clean tree: ok=%v err=%v, want no patch", ok, err)
+	}
+
+	write("a.txt", "two\n") // modified tracked — in
+	write("b.txt", "new\n") // staged new file — in
+	git("add", "b.txt")
+	write("c.txt", "loose\n") // untracked — out
+	ok, err := dirtyPatch(root, dst)
+	if err != nil || !ok {
+		t.Fatalf("dirty tree: ok=%v err=%v, want a patch", ok, err)
+	}
+	b, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{"a.txt", "b.txt"} {
+		if !strings.Contains(string(b), f) {
+			t.Errorf("dirty patch missing %s", f)
+		}
+	}
+	if strings.Contains(string(b), "c.txt") {
+		t.Error("untracked file leaked into the dirty patch")
+	}
+}
+
+// .pier-include is the only loose-file channel: lines are paths or globs,
 // matched against the disk with no git-status distinction (the fixture isn't
 // even a git repo). Directory lines carry their whole subtree; escapes and
 // comments are dropped.
-func TestPierFiles(t *testing.T) {
+func TestPierInclude(t *testing.T) {
 	root := t.TempDir()
 	write := func(rel string) {
 		t.Helper()
@@ -214,7 +270,7 @@ func TestPierFiles(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(root, ".pier-files"),
+	if err := os.WriteFile(filepath.Join(root, ".pier-include"),
 		[]byte("# what travels\napps/*/.env*\nuploads/\nsecrets.txt\n../escape\n/etc/passwd\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -226,10 +282,10 @@ func TestPierFiles(t *testing.T) {
 	write("secrets.txt")
 	write(".env") // root env NOT listed — the file is the whole selection
 
-	got := repoLooseFiles(root)
+	got := pierIncludeFiles(root)
 	want := []string{"apps/api/.env", "apps/api/.env.local", "apps/web/.env",
 		"secrets.txt", "uploads/fixtures/a.bin"}
 	if !slices.Equal(got, want) {
-		t.Errorf("with .pier-files = %v, want %v", got, want)
+		t.Errorf("with .pier-include = %v, want %v", got, want)
 	}
 }
