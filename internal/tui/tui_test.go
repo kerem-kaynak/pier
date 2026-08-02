@@ -31,7 +31,7 @@ func TestViewStates(t *testing.T) {
 		{Name: "bad-deps", Repo: "myapp", State: driver.StateIdle, Setup: "failed"},
 	}
 	v := m.View()
-	for _, want := range []string{"fix-auth", "big-build", "working", "strained", "✗setup", "NAME"} {
+	for _, want := range []string{"fix-auth", "big-build", "working", "strained", "(setup failed)", "NAME"} {
 		if !strings.Contains(v, want) {
 			t.Errorf("list view missing %q:\n%s", want, v)
 		}

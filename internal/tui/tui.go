@@ -397,9 +397,9 @@ func stateCell(s driver.Session) string {
 	}
 	switch s.Setup {
 	case "running":
-		cell += " ⋯setup"
+		cell += " (setting up)"
 	case "failed":
-		cell += " ✗setup"
+		cell += " (setup failed)"
 	}
 	return cell
 }
