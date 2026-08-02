@@ -209,6 +209,14 @@ func (d *Driver) Create(ctx context.Context, spec driver.CreateSpec) (sess *driv
 	if out, err := d.sshRunOpts(ctx, id, fwd, "bash /tmp/pier-bootstrap.sh"); err != nil {
 		return nil, fmt.Errorf("bootstrap: %w\n%s", err, out)
 	}
+	// Last act: the ready tag is what List and attach trust — running
+	// without it reads as still-creating everywhere. A failed tag write
+	// fails the create (defer cleans up) rather than leave a session that
+	// looks stuck forever.
+	if _, err := d.aws(ctx, "ec2", "create-tags", "--resources", id,
+		"--tags", "Key="+TagReady+",Value=1"); err != nil {
+		return nil, fmt.Errorf("marking session ready: %w", err)
+	}
 
 	return &driver.Session{
 		ID: id, Name: spec.Name, Repo: filepath.Base(spec.Repo), Branch: spec.Branch,

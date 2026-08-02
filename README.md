@@ -71,9 +71,12 @@ verified spike numbers: [docs/SPEC.md](docs/SPEC.md), [spike/](spike/).
   `pier port <session> 3000` stays as the manual, zero-sudo fallback
   (`8080:3000` maps local:session).
 - Creating from the TUI doesn't block: the session builds in the background
-  and sits in the list as `creating` until its bootstrap finishes. Attaching
-  early just waits for setup to complete — you never land in a session
-  before its repo does, and a create that fails cleans up its own instance.
+  and sits in the list as `creating` until its bootstrap finishes (a
+  `pier:ready` tag written as the create's last act — EC2 says "running"
+  long before a session is usable, so pier doesn't). Attaching early is
+  refused with a plain "still setting up — try again when it shows running";
+  you never land in a session before its repo does, never see a raw AWS
+  connection error, and a create that fails cleans up its own instance.
 - If the repo has a `.pier-setup.sh`, it runs asynchronously in a tmux window
   on first boot (deps, migrations, seeds) — after the checkout, dirty patch,
   and `.pier-include` files are all in place. Set `PIER_SETUP_SCRIPT` to run

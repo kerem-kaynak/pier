@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/kerem-kaynak/pier/internal/driver"
 )
 
@@ -33,5 +34,25 @@ func TestViewStates(t *testing.T) {
 		if !strings.Contains(v, want) {
 			t.Errorf("list view missing %q:\n%s", want, v)
 		}
+	}
+}
+
+// Enter on a still-creating session must not leave the TUI to spawn ssh —
+// mid-create attaches used to dump a raw TargetNotConnected. It shows a
+// notice and stays put instead.
+func TestEnterOnCreatingSession(t *testing.T) {
+	m := model{loaded: true, sessions: []driver.Session{
+		{Name: "half-built", Repo: "myapp", State: driver.StateCreating},
+	}}
+	got, cmd := m.updateList(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd != nil {
+		t.Fatal("enter on a creating session must not quit to attach")
+	}
+	gm := got.(model)
+	if gm.action.Kind == ActionAttach {
+		t.Error("attach action set for a creating session")
+	}
+	if !strings.Contains(gm.status, "still setting up") || gm.statusBad {
+		t.Errorf("want a friendly notice, got status=%q bad=%v", gm.status, gm.statusBad)
 	}
 }

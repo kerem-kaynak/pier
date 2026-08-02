@@ -370,12 +370,13 @@ func enrich(drv driver.Driver, sessions []driver.Session) {
 			defer cancel()
 			out, err := drv.Exec(ctx, s.ID, "cat /run/pier/status.json 2>/dev/null || echo absent")
 			if err != nil {
-				return // unreachable (booting, ssm blip) — keep plain "running"
+				return // unreachable (ssm blip) — keep plain "running"
 			}
 			if strings.TrimSpace(out) == "absent" {
-				// Instance up but no supervisor beacon yet: the create's
-				// bootstrap is still running (push, harness wait, setup).
-				s.State = driver.StateCreating
+				// Only ready-tagged sessions get here, so no beacon isn't
+				// mid-create anymore: /run is tmpfs, so right after a resume
+				// the supervisor hasn't written its first beacon yet. Keep
+				// plain "running".
 				return
 			}
 			var st struct {
@@ -460,8 +461,18 @@ func cmdAttach(args []string) {
 	}
 	_, drv := loadDriver()
 	s := match(drv, args[0])
+	requireReady(s)
 	resumeIfParked(drv, s)
 	attach(drv, s.ID)
+}
+
+// requireReady refuses commands against a still-creating session — cleanly,
+// before any ssh is spawned, so the user never sees a raw TargetNotConnected
+// from the SSM window between EC2-running and actually-attachable.
+func requireReady(s driver.Session) {
+	if s.State == driver.StateCreating {
+		fatal(fmt.Errorf("%s is still setting up — try again when `pier ls` shows it running", s.Name))
+	}
 }
 
 var mcpServerName = regexp.MustCompile(`^[A-Za-z0-9._:@-]+$`)
@@ -478,6 +489,7 @@ func cmdMCP(args []string) {
 	}
 	_, drv := loadDriver()
 	s := match(drv, args[1])
+	requireReady(s)
 	resumeIfParked(drv, s)
 
 	if len(args) == 2 {
@@ -689,6 +701,7 @@ func cmdResize(args []string) {
 	}
 	_, drv := loadDriver()
 	s := match(drv, args[0])
+	requireReady(s) // resizing mid-create would stop the instance under its bootstrap
 	itype := args[1]
 	if s.State == driver.StateParked {
 		fmt.Printf("resizing parked %s to %s (stays parked)\n", s.Name, itype)

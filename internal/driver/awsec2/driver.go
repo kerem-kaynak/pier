@@ -29,6 +29,7 @@ const (
 	TagSession    = "pier:session"
 	TagRepo       = "pier:repo"
 	TagBranch     = "pier:branch"
+	TagReady      = "pier:ready" // create's last act: bootstrap done, attachable
 	Workspace     = "/home/agent/work"
 	amiParamBase  = "/aws/service/canonical/ubuntu/server/24.04/stable/current/%s/hvm/ebs-gp3/ami-id"
 )
@@ -109,6 +110,7 @@ func (d *Driver) List(ctx context.Context) ([]driver.Session, error) {
 	var sessions []driver.Session
 	for _, in := range raw {
 		s := driver.Session{ID: in.ID, User: me, Driver: d.Name()}
+		ready := false
 		for _, t := range in.Tags {
 			switch t.Key {
 			case TagSession:
@@ -117,13 +119,22 @@ func (d *Driver) List(ctx context.Context) ([]driver.Session, error) {
 				s.Repo = t.Value
 			case TagBranch:
 				s.Branch = t.Value
+			case TagReady:
+				ready = true
 			}
 		}
 		switch in.State {
 		case "pending":
 			s.State = driver.StateCreating
 		case "running":
+			// EC2 says running long before the session is usable (SSM
+			// registration, secrets push, bootstrap). The ready tag is the
+			// create's last act, so its absence means still-creating — a
+			// truthful state with no probe and no SSM dependency.
 			s.State = driver.StateRunning // enriched to working/idle by the caller
+			if !ready {
+				s.State = driver.StateCreating
+			}
 		case "stopping", "stopped":
 			s.State = driver.StateParked
 		default:
@@ -230,16 +241,13 @@ func (d *Driver) Destroy(ctx context.Context, id string) error {
 // them at the symlink instead, so `git push` over ssh keeps working across
 // re-attaches. Keys never leave the laptop; detached sessions can't use them.
 //
-// It also gates on the bootstrap marker: attaching mid-create would land in
-// an empty $HOME (no repo yet) and steal the `main` tmux session away from
-// its workdir — so we wait, with feedback, until bootstrap's last act.
+// It also refuses on a missing bootstrap marker: attaching mid-create would
+// land in an empty $HOME (no repo yet) and steal the `main` tmux session
+// away from its workdir. The ready tag stops pier's own commands well before
+// this, so it's a backstop for races and raw ssh users — refuse, don't wait.
 func (d *Driver) AttachCommand(ctx context.Context, id string) (*exec.Cmd, error) {
 	const remote = `[ -S "$SSH_AUTH_SOCK" ] && ln -sf "$SSH_AUTH_SOCK" ~/.ssh/agent.sock
-w=0; until [ -e "$HOME/.pier-bootstrapped" ]; do
-  [ "$w" -eq 0 ] && echo "setup is still running (secrets + repo on their way) — dropping you in when it finishes"
-  w=$((w+1)); [ "$w" -gt 450 ] && { echo "pier: setup never finished — the create likely failed; recreate the session" >&2; exit 1; }
-  sleep 2
-done
+[ -e "$HOME/.pier-bootstrapped" ] || { echo "pier: this session is still setting up — attach again when it shows running in pier ls" >&2; exit 1; }
 exec tmux new-session -A -s main`
 	args := append(d.sshOpts(id), "-t", "-o", "ForwardAgent=yes", "agent@"+id, remote)
 	cmd := exec.CommandContext(ctx, "ssh", args...)

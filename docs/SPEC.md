@@ -140,14 +140,18 @@ The beacon additionally lists the session's listening TCP ports (one
 
 A session either exists fully set up or not at all — no half-states:
 
-- Bootstrap's **last act** is writing `~/.pier-bootstrapped` (after the repo
-  checkout and tmux session, before the async `.pier-setup.sh` finishes).
-  Attach gates on the marker: attaching mid-create waits with feedback
-  instead of dropping into an empty $HOME — which would also steal the
-  `main` tmux session away from its workdir. The beacon carries a
-  `bootstrapping` flag meanwhile, so ls/TUI keep showing `creating` until
-  the repo is actually there (the supervisor starts early on purpose: even
-  a half-made instance parks itself).
+- The create's **last act** is a `pier:ready` tag on the instance (written
+  after the VM-side bootstrap touches `~/.pier-bootstrapped`; the marker
+  stays as the raw-ssh backstop, before the async `.pier-setup.sh`
+  finishes). EC2 reports `running` well before the session is usable — SSM
+  registration alone lags ~30s — so ls/TUI read running-without-the-tag as
+  `creating`: truthful state from the first second, no probe, no SSM
+  dependency. Attach and other session commands **refuse cleanly** on a
+  creating session ("still setting up — try again when it shows running")
+  instead of spawning ssh into a raw `TargetNotConnected` or waiting to
+  drop the user into an empty $HOME — which would also steal the `main`
+  tmux session away from its workdir. (The supervisor still starts early on
+  purpose: even a half-made instance parks itself.)
 - A create that fails after launch **destroys its own instance** (ctrl-c
   included — the cleanup runs on a cancel-immune context). Transient scp
   drops right after boot get one retry first.
@@ -307,7 +311,7 @@ shows headroom (e.g. `12/32 vCPU`).
 
 ```
 pier                    TUI: list / attach / new / delete / pin (new = background create,
-                        listed as "creating" until bootstrap writes its done-marker)
+                        listed as "creating" until the create writes its ready tag)
 pier <branch> [base]    create from cwd repo (branch off base, default HEAD) and attach
 pier ls                 list own sessions
 pier attach <match>     reattach; resumes if parked

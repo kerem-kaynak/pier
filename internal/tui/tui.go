@@ -207,6 +207,10 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "enter":
 		if len(m.sessions) > 0 {
+			if s := m.sessions[m.cursor]; s.State == driver.StateCreating {
+				m.status, m.statusBad = s.Name+" is still setting up — attach when it shows running", false
+				return m, nil
+			}
 			m.action = Action{Kind: ActionAttach, Session: m.sessions[m.cursor]}
 			return m, tea.Quit
 		}
