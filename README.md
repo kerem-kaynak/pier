@@ -265,6 +265,10 @@ proxy up: running sessions resolve as <session>.pier
 ```
 
 - Open `http://checkout-flow.pier:3000` in a browser, or `psql -h checkout-flow.pier`.
+- `https://checkout-flow.pier:3000` works on the same port. Browsers only
+  give non-localhost origins a secure context over https, and libraries
+  like auth0 refuse to run without one. Trust pier's local CA once (the
+  proxy prints the command) and the warning goes away.
 - Ports the session listens on are discovered and mirrored live.
 - A live connection counts as attachment, so a session never parks under
   your open browser tab.

@@ -71,12 +71,13 @@ func lo0Aliases() map[string]bool {
 	return have
 }
 
-// proxyIPs is every loopback IP the proxy may bind: the resolver's plus one
-// per session slot.
+// proxyIPs is every loopback IP the proxy may bind: the resolver's plus each
+// session slot's public IP (pier's sniffing relay) and its shadow (where the
+// ssh forwards bind).
 func proxyIPs() []string {
 	ips := []string{dnsAddr}
 	for i := range slotCount {
-		ips = append(ips, slotIP(i).String())
+		ips = append(ips, slotIP(i).String(), shadowOf(slotIP(i)).String())
 	}
 	return ips
 }

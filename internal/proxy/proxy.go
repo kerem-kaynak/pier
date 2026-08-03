@@ -22,6 +22,7 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -77,6 +78,11 @@ func Run(ctx context.Context, drv driver.Driver, opt Options) error {
 	if err := os.MkdirAll(ctlDir, 0o700); err != nil {
 		return err
 	}
+	mint, err := loadOrCreateCA(opt.StateDir)
+	if err != nil {
+		return fmt.Errorf("proxy CA: %w", err)
+	}
+	tcfg := &tls.Config{GetCertificate: mint.getCertificate, NextProtos: []string{"http/1.1"}}
 	names := &table{m: map[string]net.IP{}}
 	dns, err := serveDNS(net.JoinHostPort(dnsAddr, dnsPort), names.lookup)
 	if err != nil {
@@ -87,7 +93,11 @@ func Run(ctx context.Context, drv driver.Driver, opt Options) error {
 		return fmt.Errorf("dns: %w%s", err, hint)
 	}
 	defer dns.Close()
-	fmt.Fprintln(opt.Out, ui.Bold.Render("proxy up")+ui.Dim.Render(" — running sessions resolve as <session>."+domain+"; ctrl-c to stop"))
+	fmt.Fprintln(opt.Out, ui.Bold.Render("proxy up")+ui.Dim.Render(" — running sessions resolve as <session>."+domain+" (http + https); ctrl-c to stop"))
+	if ca := caPath(opt.StateDir); !caTrusted(ca) {
+		fmt.Fprintln(opt.Out, ui.Warn.Render("! https: pier's local CA isn't trusted yet — browsers will warn on https://<session>."+domain+" URLs"))
+		fmt.Fprintln(opt.Out, ui.Dim.Render("  trust it once (http works either way): "+trustHint(ca)))
+	}
 
 	workers := map[string]*worker{}
 	slots := &slots{byID: map[string]int{}}
@@ -146,9 +156,11 @@ func Run(ctx context.Context, drv driver.Driver, opt Options) error {
 				}
 				w := &worker{
 					id: id, name: hostname(s.Name), dest: dest, ip: ip,
+					shadow: shadowOf(ip), tcfg: tcfg,
 					ctl:  filepath.Join(ctlDir, id+".ctl"),
 					opts: sshOpts, out: opt.Out, names: names,
-					done: make(chan struct{}),
+					relays: map[int]net.Listener{},
+					done:   make(chan struct{}),
 				}
 				w.ctx, w.cancel = context.WithCancel(ctx)
 				workers[id] = w
@@ -176,14 +188,17 @@ func Run(ctx context.Context, drv driver.Driver, opt Options) error {
 // its DNS registration, and its live forward set. OpenSSH multiplexing does
 // the heavy lifting: beacon polls are channels on the one connection, and
 // forwards are added/removed on the fly with `ssh -O forward/cancel` — no
-// per-port processes, no SSH library.
+// per-port processes, no SSH library. The forwards bind the session's shadow
+// IP; the public ip:port is pier's own sniffing relay, so https works too.
 type worker struct {
 	id, name, dest string
-	ip             net.IP
+	ip, shadow     net.IP
+	tcfg           *tls.Config
 	ctl            string
 	opts           []string
 	out            io.Writer
 	names          *table
+	relays         map[int]net.Listener
 	ctx            context.Context
 	cancel         context.CancelFunc
 	done           chan struct{}
@@ -191,6 +206,11 @@ type worker struct {
 
 func (w *worker) run() {
 	defer close(w.done)
+	defer func() { // relays die with the worker; the ssh forwards die with the master
+		for _, ln := range w.relays {
+			ln.Close()
+		}
+	}()
 	_ = os.Remove(w.ctl) // stale socket from a crashed proxy blocks -M
 
 	var errb bytes.Buffer
@@ -299,6 +319,11 @@ func (w *worker) sync(ports []int, forwards map[int]bool) {
 		}
 		if err := w.ctlOp(10*time.Second, "-O", "forward", "-L", w.spec(p)); err != nil {
 			w.logf(ui.Warn.Render("! %s.%s: mirroring %d failed: %v"), w.name, domain, p, err)
+		} else if ln, err := net.Listen("tcp", net.JoinHostPort(w.ip.String(), strconv.Itoa(p))); err != nil {
+			w.logf(ui.Warn.Render("! %s.%s: relay on %d failed: %v"), w.name, domain, p, err)
+		} else {
+			w.relays[p] = ln
+			go serveRelay(ln, net.JoinHostPort(w.shadow.String(), strconv.Itoa(p)), w.tcfg)
 		}
 		forwards[p] = true // even on failure: converge, don't spam retries
 		changed = true
@@ -308,6 +333,10 @@ func (w *worker) sync(ports []int, forwards map[int]bool) {
 			continue
 		}
 		_ = w.ctlOp(10*time.Second, "-O", "cancel", "-L", w.spec(p))
+		if ln, ok := w.relays[p]; ok {
+			ln.Close()
+			delete(w.relays, p)
+		}
 		delete(forwards, p)
 		changed = true
 	}
@@ -324,8 +353,10 @@ func (w *worker) sync(ports []int, forwards map[int]bool) {
 	}
 }
 
+// spec binds ssh's forward on the shadow IP: the public ip:port belongs to
+// the sniffing relay.
 func (w *worker) spec(port int) string {
-	return fmt.Sprintf("%s:%d:localhost:%d", w.ip, port, port)
+	return fmt.Sprintf("%s:%d:localhost:%d", w.shadow, port, port)
 }
 
 // ctlOp runs a control operation against the master's socket with a timeout.
