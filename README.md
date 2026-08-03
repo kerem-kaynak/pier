@@ -63,10 +63,10 @@ type in one 40-second cycle, disk intact. And to see what the agent built,
 | parked | `~$3-4/mo` (disk only) |
 
 There is no control plane. No server, no database, no daemon on your laptop.
-Session state lives in EC2 instance tags. Connections are plain ssh to the
-VM's public IP at your line rate, with port 22 open only to your own IP.
-Where a network blocks that path, everything falls back to an SSM tunnel
-automatically: zero inbound ports, works from anywhere, slow.
+Session state lives in EC2 instance tags. Every byte between you and the VM
+rides ssh straight to it at line rate, with port 22 open to your IP only.
+Networks that block that path fall back to an SSM tunnel automatically. Set
+`aws.direct = false` to force the tunnel.
 
 **Why AWS first?** Most teams already have the account, the credits, the
 budget line, and the compliance review, so pier rides them instead of
@@ -234,25 +234,6 @@ have before skipping the bundle. Pushing from a session works anytime with a
 token, and while attached with ssh keys only (the forwarded agent leaves
 when you do).
 
-### Fast connections by default
-
-pier dials sshd on the VM's public IP:
-
-- Transfers, port forwards, and the proxy run at your connection's full
-  speed, so dev servers load like local ones.
-- Typing in an attached session echoes at raw network latency.
-- Fresh VMs answer as soon as sshd is up instead of waiting on SSM
-  registration.
-
-pier keeps one inbound rule in its security group: TCP 22 from your current
-public IP as a /32. The rule follows your IP, every other port stays closed,
-and auth is the per-session ssh key.
-
-On networks that block the direct path (some corporate egress), pier falls
-back to SSH over an SSM tunnel by itself. The tunnel needs no inbound ports
-but moves about 1 MB/s. Set `aws.direct = false` in the settings to force
-it for every connection.
-
 ### Secrets, deliberately boring
 
 Secrets travel once, at create, as an explicit manifest:
@@ -349,8 +330,7 @@ EC2 says "running" long before a session is usable, so pier doesn't:
 
 ## Caveats
 
-- **The SSM fallback is about 1 MB/s.** When the direct path is blocked (or
-  forced off), everything rides the tunnel, and repos that can't come from
+- **The SSM fallback tunnel is about 1 MB/s.** Repos that can't come from
   GitHub push their history through it (a 300 MB history takes about 5
   minutes, once per create). The create output says which transfer mode you
   got and why.
