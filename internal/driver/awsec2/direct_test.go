@@ -41,6 +41,23 @@ func TestSSHOptsTransports(t *testing.T) {
 	}
 }
 
+// Park, resume and resize invalidate the probe cache — a cached success
+// otherwise points connections at the old public IP for up to a TTL after
+// the instance comes back on a new one.
+func TestDropProbe(t *testing.T) {
+	d := &Driver{
+		Direct: true,
+		dprobe: map[string]directProbe{
+			"i-0abc": {ip: "203.0.113.7", until: time.Now().Add(time.Minute)},
+		},
+	}
+	d.dropProbe("i-0abc")
+	if _, ok := d.dprobe["i-0abc"]; ok {
+		t.Error("dropProbe must forget the cached probe")
+	}
+	d.dropProbe("i-0abc") // absent id is a no-op, not a panic
+}
+
 func TestSanitizeRuleName(t *testing.T) {
 	for in, want := range map[string]string{
 		"kerem":          "kerem",

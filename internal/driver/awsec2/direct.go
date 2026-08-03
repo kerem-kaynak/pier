@@ -31,6 +31,10 @@ const (
 	// sshd isn't up yet. Retry almost immediately, so a fresh create goes
 	// direct the moment sshd listens instead of waiting out a full TTL.
 	directBootTTL = 3 * time.Second
+	// For this long after launch, any dial failure counts as still-booting —
+	// early boot drops packets instead of refusing them, and writing that
+	// off as a blocked network would lock the connection onto the tunnel.
+	directBootWindow = 3 * time.Minute
 )
 
 type directProbe struct {
@@ -62,25 +66,33 @@ func (d *Driver) directIP(ctx context.Context, id string) string {
 
 func (d *Driver) probeDirect(ctx context.Context, id string) (string, time.Duration) {
 	out, err := d.aws(ctx, "ec2", "describe-instances", "--instance-ids", id,
-		"--query", "Reservations[0].Instances[0].[PublicIpAddress,SecurityGroups[0].GroupId]",
+		"--query", "Reservations[0].Instances[0].[PublicIpAddress,SecurityGroups[0].GroupId,LaunchTime]",
 		"--output", "text")
 	if err != nil {
 		return "", directTTL
 	}
 	f := strings.Fields(out)
-	if len(f) != 2 || f[0] == "None" || f[1] == "None" {
+	if len(f) != 3 || f[0] == "None" || f[1] == "None" {
 		// No public address (yet): still pending, parked, or a private
 		// subnet. Cheap to re-check.
 		return "", directBootTTL
 	}
 	ip, sg := f[0], f[1]
+	booting := false
+	if ts, err := time.Parse(time.RFC3339, f[2]); err == nil {
+		booting = time.Since(ts) < directBootWindow
+	}
 	if err := d.ensureDirectRule(ctx, sg); err != nil {
 		d.directNotice(id, "direct connect: "+err.Error()+" — using the ssm tunnel")
 		return "", directTTL
 	}
 	c, err := net.DialTimeout("tcp", net.JoinHostPort(ip, "22"), 2*time.Second)
 	if err != nil {
-		if strings.Contains(err.Error(), "refused") {
+		// Fall back only when direct will never work. A failure right after
+		// launch means sshd isn't up yet, so keep re-probing quietly and the
+		// connection goes direct the moment it listens. Only a dead port on
+		// a long-running instance means the network truly blocks 22.
+		if booting || strings.Contains(err.Error(), "refused") {
 			return "", directBootTTL
 		}
 		d.directNotice(id, "direct connect: "+ip+":22 does not answer from this network — using the ssm tunnel")
@@ -88,6 +100,15 @@ func (d *Driver) probeDirect(ctx context.Context, id string) (string, time.Durat
 	}
 	c.Close()
 	return ip, directTTL
+}
+
+// dropProbe forgets a cached probe. Park and resume hand the instance a new
+// public IP, so pier's own state transitions invalidate instead of letting
+// the next connection dial a dead address for up to a TTL.
+func (d *Driver) dropProbe(id string) {
+	d.dmu.Lock()
+	delete(d.dprobe, id)
+	d.dmu.Unlock()
 }
 
 const directRuleDesc = "pier direct"

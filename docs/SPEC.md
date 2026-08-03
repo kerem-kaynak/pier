@@ -103,9 +103,12 @@ the IP change every park/resume brings). The tunnel moves ~100KB/s-1MB/s and
 adds a service hop to every keystroke; direct is line-rate and raw-RTT. pier
 keeps one ingress rule per caller — TCP 22 from their current public IP /32,
 recognized by rule description, stale addresses revoked — and falls back to
-the tunnel whenever direct can't work (no public IP, network blocks outbound
-22). `aws.direct = false` forces the tunnel for every connection. Teardown
-deletes the SG, rules included.
+the tunnel only when direct can never work (no public IP, network blocks
+outbound 22). Dial failures within 3 minutes of launch count as still-booting
+and re-probe every few seconds instead, so post-resume connections flip to
+direct the moment sshd listens; park/resume/resize drop the probe cache so
+nothing dials the previous public IP. `aws.direct = false` forces the tunnel
+for every connection. Teardown deletes the SG, rules included.
 
 ## 5. Identity & teams
 

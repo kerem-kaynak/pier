@@ -178,11 +178,15 @@ func (d *Driver) Resume(ctx context.Context, id string) error {
 	if _, err := d.aws(ctx, "ec2", "start-instances", "--instance-ids", id); err != nil {
 		return err
 	}
+	d.dropProbe(id) // the VM comes back on a fresh public IP
 	return d.waitSSH(ctx, id, 240*time.Second)
 }
 
 func (d *Driver) Park(ctx context.Context, id string) error {
 	_, err := d.aws(ctx, "ec2", "stop-instances", "--instance-ids", id)
+	if err == nil {
+		d.dropProbe(id) // the public IP dies with the stop
+	}
 	return err
 }
 
@@ -222,6 +226,7 @@ func (d *Driver) Resize(ctx context.Context, id, itype string) error {
 		if _, err := d.aws(ctx, "ec2", "stop-instances", "--instance-ids", id); err != nil {
 			return err
 		}
+		d.dropProbe(id)
 	case "stopping", "stopped":
 		// already parked (or on its way); resize in place
 	default:
