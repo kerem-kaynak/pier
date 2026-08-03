@@ -26,6 +26,11 @@ type AWS struct {
 	InstanceType string `toml:"instance_type"`
 	DiskGiB      int    `toml:"disk_gib"`
 	Subnet       string `toml:"subnet"` // optional: orgs without a default VPC
+	// Direct (the default): ssh straight to the instance's public IP —
+	// line-rate transfers, raw-RTT typing. pier opens TCP 22 from this
+	// machine's public IP only and falls back to the SSM tunnel whenever
+	// the direct path doesn't work. false forces the tunnel.
+	Direct bool `toml:"direct"`
 	// BakedAMI is the legacy shared image (pre repo-specific bakes) — still
 	// used as a fallback, deregistered and cleared by the next `pier bake`.
 	BakedAMI string `toml:"baked_ami,omitempty"`
@@ -53,6 +58,7 @@ func Default() Config {
 		AWS: AWS{
 			InstanceType: "t4g.medium",
 			DiskGiB:      40,
+			Direct:       true,
 		},
 	}
 }
@@ -113,6 +119,7 @@ var Settings = []Setting{
 	{"aws.instance_type", "machine for new sessions"},
 	{"aws.disk_gib", ""},
 	{"aws.subnet", "optional"},
+	{"aws.direct", "ssh straight to the VM, fast — false forces the ssm tunnel"},
 }
 
 // Get returns the current value of a settable key ("" for unknown keys).
@@ -134,6 +141,8 @@ func Get(c Config, key string) string {
 		return strconv.Itoa(c.AWS.DiskGiB)
 	case "aws.subnet":
 		return c.AWS.Subnet
+	case "aws.direct":
+		return strconv.FormatBool(c.AWS.Direct)
 	}
 	return ""
 }
@@ -167,6 +176,15 @@ func Set(c *Config, key, val string) error {
 		c.AWS.DiskGiB = n
 	case "aws.subnet":
 		c.AWS.Subnet = val
+	case "aws.direct":
+		switch strings.ToLower(val) {
+		case "true", "yes", "on":
+			c.AWS.Direct = true
+		case "false", "no", "off":
+			c.AWS.Direct = false
+		default:
+			return fmt.Errorf("aws.direct: want true or false (got %q)", val)
+		}
 	default:
 		keys := make([]string, len(Settings))
 		for i, s := range Settings {

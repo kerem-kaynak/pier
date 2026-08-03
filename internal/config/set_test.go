@@ -32,6 +32,29 @@ func TestSet(t *testing.T) {
 		t.Errorf("disk_gib = %d", cfg.AWS.DiskGiB)
 	}
 
+	// Direct connect is the default; false is the opt-out to the SSM tunnel.
+	if !cfg.AWS.Direct {
+		t.Error("aws.direct must default to true")
+	}
+	if err := Set(&cfg, "aws.direct", "false"); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AWS.Direct {
+		t.Error("aws.direct = false must apply")
+	}
+	if Get(cfg, "aws.direct") != "false" {
+		t.Errorf("aws.direct reads back %q", Get(cfg, "aws.direct"))
+	}
+	if err := Set(&cfg, "aws.direct", "maybe"); err == nil {
+		t.Error("aws.direct must reject non-boolean values")
+	}
+	if err := Set(&cfg, "aws.direct", "on"); err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.AWS.Direct {
+		t.Error("aws.direct = on must apply")
+	}
+
 	// Secrets stay out of the set path: the error must name the valid keys.
 	err := Set(&cfg, "secrets.claude_oauth_token", "x")
 	if err == nil || !strings.Contains(err.Error(), "settable:") {

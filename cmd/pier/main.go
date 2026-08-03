@@ -130,6 +130,7 @@ func newDriver(cfg config.Config) (driver.Driver, error) {
 			InstanceType:  cfg.AWS.InstanceType,
 			DiskGiB:       cfg.AWS.DiskGiB,
 			Subnet:        cfg.AWS.Subnet,
+			Direct:        cfg.AWS.Direct,
 			StateDir:      config.Dir(),
 			Manifest:      cfg.Secrets.Manifest,
 			SessionEnv:    sessionEnv(cfg),

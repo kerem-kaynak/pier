@@ -1,8 +1,9 @@
 // Package awsec2 implements the pier driver on EC2 + EBS.
 //
 // Shape (settled in docs/SPEC.md): session = one EC2 instance + gp3 root
-// volume; native stop/start = park/resume; zero-inbound SG with everything
-// (attach, file push, exec) riding SSH over the SSM tunnel; instance role
+// volume; native stop/start = park/resume; everything (attach, file push,
+// exec) is OpenSSH straight to the instance's public IP by default, with
+// SSH over the SSM tunnel as the automatic fallback (see direct.go); instance role
 // carries AmazonSSMManagedInstanceCore and nothing else; self-park is the
 // in-VM supervisor running `shutdown -h now` (InstanceInitiatedShutdown-
 // Behavior=stop — verified by spike/aws.sh). All state lives in EC2 tags.
@@ -15,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/kerem-kaynak/pier/internal/driver"
@@ -40,6 +42,10 @@ type Driver struct {
 	InstanceType string
 	DiskGiB      int
 	Subnet       string // optional: orgs without a default VPC
+	// Direct (the default): dial sshd on the instance's public IP, opening
+	// TCP 22 to this machine's /32 only. false forces the SSM tunnel for
+	// every connection. See direct.go.
+	Direct bool
 
 	// StateDir holds per-session ssh keys + known_hosts (the config dir).
 	StateDir string
@@ -53,6 +59,14 @@ type Driver struct {
 	SupervisorBin func(arch string) ([]byte, error)
 
 	callerARN string // cached
+
+	// direct-connect probe state (direct.go)
+	dmu       sync.Mutex
+	dprobe    map[string]directProbe
+	myIP      string
+	myIPUntil time.Time
+	ensured   string // the cidr whose SG rule this process reconciled
+	noticed   map[string]bool
 }
 
 var _ driver.Driver = (*Driver)(nil)
@@ -249,7 +263,7 @@ func (d *Driver) AttachCommand(ctx context.Context, id string) (*exec.Cmd, error
 	const remote = `[ -S "$SSH_AUTH_SOCK" ] && ln -sf "$SSH_AUTH_SOCK" ~/.ssh/agent.sock
 [ -e "$HOME/.pier-bootstrapped" ] || { echo "pier: this session is still setting up — attach again when it shows running in pier ls" >&2; exit 1; }
 exec tmux new-session -A -s main`
-	args := append(d.sshOpts(id), "-t", "-o", "ForwardAgent=yes", "agent@"+id, remote)
+	args := append(d.sshOpts(ctx, id), "-t", "-o", "ForwardAgent=yes", "agent@"+id, remote)
 	cmd := exec.CommandContext(ctx, "ssh", args...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	return cmd, nil
@@ -267,19 +281,19 @@ func (d *Driver) MCPLoginCommand(ctx context.Context, id, server string, port in
 	remote := fmt.Sprintf(
 		"set -a; . ~/.config/pier/env 2>/dev/null; set +a; BROWSER=echo exec claude mcp login '%s' --callback-port %d",
 		server, port)
-	args := append(d.sshOpts(id),
+	args := append(d.sshOpts(ctx, id),
 		"-t", "-L", fmt.Sprintf("%d:localhost:%d", port, port), "agent@"+id, remote)
 	cmd := exec.CommandContext(ctx, "ssh", args...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	return cmd, nil
 }
 
-// PortForwardCommand: plain ssh -L forwards over the SSM tunnel, -N so no
-// remote shell is taken. Runs until interrupted. The tunnel is not fast
-// (~100KB/s-1MB/s raw depending on the network); sshOpts' -C compression
-// buys ~4x on dev-server text, which is what makes cold page loads bearable.
+// PortForwardCommand: plain ssh -L forwards, -N so no remote shell is
+// taken. Runs until interrupted. Over the SSM tunnel this is not fast
+// (~100KB/s-1MB/s raw; sshOpts' -C buys ~4x on dev-server text) — with
+// aws.direct the forwards run at line rate.
 func (d *Driver) PortForwardCommand(ctx context.Context, id string, pairs [][2]int) (*exec.Cmd, error) {
-	args := d.sshOpts(id)
+	args := d.sshOpts(ctx, id)
 	for _, p := range pairs {
 		args = append(args, "-L", fmt.Sprintf("%d:localhost:%d", p[0], p[1]))
 	}
@@ -290,14 +304,15 @@ func (d *Driver) PortForwardCommand(ctx context.Context, id string, pairs [][2]i
 }
 
 func (d *Driver) SSHTarget(ctx context.Context, id string) ([]string, string, error) {
-	return d.sshOpts(id), "agent@" + id, nil
+	return d.sshOpts(ctx, id), "agent@" + id, nil
 }
 
 func (d *Driver) Exec(ctx context.Context, id string, command string) (string, error) {
 	return d.sshRun(ctx, id, command)
 }
 
-// waitSSH polls until SSH over the SSM tunnel answers.
+// waitSSH polls until SSH answers (the SSM tunnel, or the direct path when
+// enabled — direct needs only sshd up, so it usually answers first).
 func (d *Driver) waitSSH(ctx context.Context, id string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {

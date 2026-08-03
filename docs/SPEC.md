@@ -65,7 +65,9 @@ in provider APIs + tags/labels — **no server, no database, no laptop daemon**.
 ### aws-ec2
 - t4g.medium default (2 vCPU / 4GB, ~$0.034/h), Ubuntu 24.04 arm64 (SSM
   parameter-resolved AMI, or the baked AMI), gp3 root 40GB.
-- Default VPC + public IP + `pier-egress-only` SG (zero inbound). Orgs
+- Default VPC + public IP + `pier-egress-only` SG (direct connect, the
+  default, reconciles one TCP-22 rule per caller, /32-scoped to their
+  current public IP; `aws.direct = false` keeps it zero inbound). Orgs
   without a default VPC set `subnet` in config.
 - Instance profile `pier-session`: `AmazonSSMManagedInstanceCore` only.
 - `InstanceInitiatedShutdownBehavior=stop` → in-VM `shutdown -h now` parks.
@@ -94,6 +96,16 @@ cloud-init, private key under `~/.config/pier/keys/`. (GCP equivalent later:
 Zero inbound networking; every connection is IAM-authenticated and audited
 (CloudTrail). Inside the VM, work happens as user `agent` in a tmux session
 under `/home/agent/work/<repo>`.
+
+Default fast path: connections dial sshd on the instance's public IP
+(HostKeyAlias keeps known_hosts keyed by instance id, so the entry survives
+the IP change every park/resume brings). The tunnel moves ~100KB/s-1MB/s and
+adds a service hop to every keystroke; direct is line-rate and raw-RTT. pier
+keeps one ingress rule per caller — TCP 22 from their current public IP /32,
+recognized by rule description, stale addresses revoked — and falls back to
+the tunnel whenever direct can't work (no public IP, network blocks outbound
+22). `aws.direct = false` forces the tunnel for every connection. Teardown
+deletes the SG, rules included.
 
 ## 5. Identity & teams
 

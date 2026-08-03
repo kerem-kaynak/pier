@@ -38,7 +38,10 @@ aws ec2 create-security-group --group-name pier-egress-only \
 
 # Devs then need permissions for: ec2 run/start/stop/terminate/describe*,
 # ssm start-session + get-parameter, sts get-caller-identity,
-# iam:PassRole on pier-session.
+# iam:PassRole on pier-session, and for direct connect (the default)
+# ec2 describe-security-group-rules + authorize/revoke-security-group-ingress
+# (pier keeps one TCP-22 rule per caller, scoped to their current public
+# IP /32; aws.direct = false forces the SSM tunnel and needs none of it).
 `
 
 func Run(newDriver func(config.Config) (driver.Driver, error), printAdminOnly bool) error {

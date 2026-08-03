@@ -63,9 +63,10 @@ type in one 40-second cycle, disk intact. And to see what the agent built,
 | parked | `~$3-4/mo` (disk only) |
 
 There is no control plane. No server, no database, no daemon on your laptop.
-Session state lives in EC2 instance tags, and every byte between you and the
-VM rides SSH over an SSM tunnel: zero inbound ports, IAM-authenticated,
-logged in CloudTrail.
+Session state lives in EC2 instance tags. Connections are plain ssh to the
+VM's public IP at your line rate, with port 22 open only to your own IP.
+Where a network blocks that path, everything falls back to an SSM tunnel
+automatically: zero inbound ports, works from anywhere, slow.
 
 **Why AWS first?** Most teams already have the account, the credits, the
 budget line, and the compliance review, so pier rides them instead of
@@ -233,6 +234,25 @@ have before skipping the bundle. Pushing from a session works anytime with a
 token, and while attached with ssh keys only (the forwarded agent leaves
 when you do).
 
+### Fast connections by default
+
+pier dials sshd on the VM's public IP:
+
+- Transfers, port forwards, and the proxy run at your connection's full
+  speed, so dev servers load like local ones.
+- Typing in an attached session echoes at raw network latency.
+- Fresh VMs answer as soon as sshd is up instead of waiting on SSM
+  registration.
+
+pier keeps one inbound rule in its security group: TCP 22 from your current
+public IP as a /32. The rule follows your IP, every other port stays closed,
+and auth is the per-session ssh key.
+
+On networks that block the direct path (some corporate egress), pier falls
+back to SSH over an SSM tunnel by itself. The tunnel needs no inbound ports
+but moves about 1 MB/s. Set `aws.direct = false` in the settings to force
+it for every connection.
+
 ### Secrets, deliberately boring
 
 Secrets travel once, at create, as an explicit manifest:
@@ -329,9 +349,11 @@ EC2 says "running" long before a session is usable, so pier doesn't:
 
 ## Caveats
 
-- **The tunnel is about 1 MB/s.** Repos that can't come from GitHub push
-  their history through it (a 300 MB history takes about 5 minutes, once per
-  create). The create output says which transfer mode you got and why.
+- **The SSM fallback is about 1 MB/s.** When the direct path is blocked (or
+  forced off), everything rides the tunnel, and repos that can't come from
+  GitHub push their history through it (a 300 MB history takes about 5
+  minutes, once per create). The create output says which transfer mode you
+  got and why.
 - **Parking loses processes.** Files, git state, and installed tools
   survive. The tmux server and an in-flight agent run don't. Hibernate
   (park with RAM) is on the roadmap.
@@ -358,9 +380,9 @@ laptop                              AWS account (yours)
 ──────                              ───────────────────
 pier CLI/TUI ── aws cli ──────────▶ EC2 API        (create/stop/start/tags)
      │                              ┌─────────────────────────┐
-     └── ssh ── SSM tunnel ───────▶ │ session VM               │
-         (zero inbound ports)       │  tmux ▸ claude / codex   │
-                                    │  pier-supervisor         │
+     └── ssh ─────────────────────▶ │ session VM               │
+         (direct to its public IP,  │  tmux ▸ claude / codex   │
+          SSM tunnel as fallback)   │  pier-supervisor         │
                                     │  └─ parks the VM when    │
                                     │     detached and quiet   │
                                     └─────────────────────────┘
@@ -397,7 +419,8 @@ The choices contributors should know before proposing changes
   down. Resize is human-triggered. Anything needing account credentials
   happens from the laptop.
 - **One transport.** Attach, exec, file push, and port forwards are all
-  OpenSSH over the SSM tunnel. No second mechanism to secure or debug.
+  OpenSSH, straight to the VM or over the SSM fallback. No second
+  mechanism to secure or debug.
 - **Guarded cloud-init, identical on stock and baked images.** Every
   install step is a no-op when the image already has it. Baking is an
   optimization, never a requirement.

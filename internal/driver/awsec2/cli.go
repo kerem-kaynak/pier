@@ -31,16 +31,43 @@ func (d *Driver) aws(ctx context.Context, args ...string) (string, error) {
 	return strings.TrimSpace(out.String()), nil
 }
 
-// --- SSH over the SSM tunnel -------------------------------------------------
-// One mechanism for everything interactive and file-shaped: OpenSSH with an
-// SSM ProxyCommand. No inbound ports, no standing keys — each session gets
-// its own keypair at create, stored under StateDir/keys/<instance-id>.pem.
+// --- SSH into the session ----------------------------------------------------
+// One mechanism for everything interactive and file-shaped: OpenSSH. No
+// standing keys — each session gets its own keypair at create, stored under
+// StateDir/keys/<instance-id>.pem. Two transports: by default a plain dial
+// of sshd on the instance's public IP (line-rate transfers, raw-RTT
+// typing), falling back to an SSM ProxyCommand (works everywhere, no
+// inbound ports, slow) whenever direct can't work. aws.direct = false
+// forces the tunnel.
 
 func (d *Driver) keyPath(id string) string {
 	return filepath.Join(d.StateDir, "keys", id+".pem")
 }
 
-func (d *Driver) sshOpts(id string) []string {
+func (d *Driver) sshOpts(ctx context.Context, id string) []string {
+	opts := []string{
+		"-i", d.keyPath(id),
+		"-o", "StrictHostKeyChecking=accept-new",
+		"-o", "UserKnownHostsFile=" + filepath.Join(d.StateDir, "known_hosts"),
+		"-o", "IdentitiesOnly=yes",
+		"-o", "BatchMode=yes",
+		"-o", "LogLevel=ERROR",
+		"-o", "ConnectTimeout=10",
+		// A dead connection otherwise hangs transfers forever: probe every
+		// 15s, give up after 4 misses (~60s).
+		"-o", "ServerAliveInterval=15",
+		"-o", "ServerAliveCountMax=4",
+	}
+	if ip := d.directIP(ctx, id); ip != "" {
+		return append(opts,
+			// HostName dials the address while the command line keeps saying
+			// agent@<instance-id>; HostKeyAlias keys known_hosts by instance
+			// id, so the entry survives the new public IP every park/resume
+			// hands out and matches the one the SSM path wrote.
+			"-o", "HostName="+ip,
+			"-o", "HostKeyAlias="+id,
+		)
+	}
 	pc := "aws ssm start-session --target %h --document-name AWS-StartSSHSession --parameters portNumber=%p"
 	if d.Profile != "" {
 		pc += " --profile " + d.Profile
@@ -48,25 +75,14 @@ func (d *Driver) sshOpts(id string) []string {
 	if d.Region != "" {
 		pc += " --region " + d.Region
 	}
-	return []string{
-		"-i", d.keyPath(id),
-		"-o", "ProxyCommand=" + pc,
-		"-o", "StrictHostKeyChecking=accept-new",
-		"-o", "UserKnownHostsFile=" + filepath.Join(d.StateDir, "known_hosts"),
-		"-o", "IdentitiesOnly=yes",
-		"-o", "BatchMode=yes",
-		"-o", "LogLevel=ERROR",
-		"-o", "ConnectTimeout=10",
-		// A dead SSM tunnel otherwise hangs transfers forever: probe every
-		// 15s, give up after 4 misses (~60s).
-		"-o", "ServerAliveInterval=15",
-		"-o", "ServerAliveCountMax=4",
+	return append(opts,
+		"-o", "ProxyCommand="+pc,
 		// The SSM data channel moves ~100KB/s raw. Compression gets ~4x on
 		// the text a dev workflow actually pushes through it (JS modules,
-		// tmux screens), turning a cold Vite page load from minutes into
-		// tens of seconds.
+		// tmux screens). The direct path skips it: zlib would only burn CPU
+		// on a line-rate link.
 		"-C",
-	}
+	)
 }
 
 func (d *Driver) sshRun(ctx context.Context, id, script string) (string, error) {
@@ -76,7 +92,7 @@ func (d *Driver) sshRun(ctx context.Context, id, script string) (string, error) 
 // sshRunOpts is sshRun with extra ssh flags — the bootstrap passes -A when
 // the workspace fetch rides the laptop's ssh agent.
 func (d *Driver) sshRunOpts(ctx context.Context, id string, extra []string, script string) (string, error) {
-	args := append(append(d.sshOpts(id), extra...), "agent@"+id, script)
+	args := append(append(d.sshOpts(ctx, id), extra...), "agent@"+id, script)
 	out, err := exec.CommandContext(ctx, "ssh", args...).CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("ssh %s: %s", id, strings.TrimSpace(string(out)))
@@ -88,7 +104,7 @@ func (d *Driver) sshRunOpts(ctx context.Context, id string, extra []string, scri
 // long user-visible steps (the bake hook) where buffered output would look
 // like a hang.
 func (d *Driver) sshStream(ctx context.Context, id, script string) error {
-	args := append(d.sshOpts(id), "agent@"+id, script)
+	args := append(d.sshOpts(ctx, id), "agent@"+id, script)
 	cmd := exec.CommandContext(ctx, "ssh", args...)
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	return cmd.Run()
@@ -97,7 +113,7 @@ func (d *Driver) sshStream(ctx context.Context, id, script string) error {
 // extra flags pass through to scp — "-q" silences the progress meter for
 // pushes too small to warrant one.
 func (d *Driver) scpTo(ctx context.Context, id, local, remote string, extra ...string) error {
-	args := append(append(d.sshOpts(id), extra...), local, "agent@"+id+":"+remote)
+	args := append(append(d.sshOpts(ctx, id), extra...), local, "agent@"+id+":"+remote)
 	cmd := exec.CommandContext(ctx, "scp", args...)
 	// scp draws its progress meter only when stdout is a terminal — so big
 	// pushes (the repo bundle) show live progress interactively and stay
