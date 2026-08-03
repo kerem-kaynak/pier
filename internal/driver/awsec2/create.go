@@ -344,6 +344,14 @@ write_files:
     content: |
       idle_timeout={{IDLE}}
       unattended_cap={{CAP}}
+  # Container root writes files as agent, the way Docker Desktop translates
+  # ownership on a Mac. Without this, any compose service running as root
+  # litters bind-mounted repos with root-owned files that break host-side
+  # tooling. Written before docker installs, so the daemon starts remapped.
+  - path: /etc/docker/daemon.json
+    permissions: "0644"
+    content: |
+      {"userns-remap": "agent"}
 runcmd:
   - |
     set -x
@@ -355,10 +363,19 @@ runcmd:
     install -d -m 700 -o agent -g agent /home/agent/.ssh
     grep -qxF '{{PUBKEY}}' /home/agent/.ssh/authorized_keys 2>/dev/null || echo '{{PUBKEY}}' >> /home/agent/.ssh/authorized_keys
     chown agent:agent /home/agent/.ssh/authorized_keys && chmod 600 /home/agent/.ssh/authorized_keys
+    # userns-remap needs subordinate id ranges: the first line maps container
+    # uid/gid 0 to agent (1000), the rest of the range covers other ids.
+    for f in /etc/subuid /etc/subgid; do
+      grep -q '^agent:1000:1$' "$f" 2>/dev/null && continue
+      { echo 'agent:1000:1'; cat "$f" 2>/dev/null; } > "$f.pier" && mv "$f.pier" "$f"
+      grep -Eq '^agent:[0-9]+:65536$' "$f" || echo 'agent:300000:65536' >> "$f"
+    done
     # Guard on packages stock Ubuntu lacks — it already ships tmux/git/jq/curl.
     # docker.io is the bare engine: compose and buildx are separate packages
     # (Docker Desktop/OrbStack bundle them, so "docker compose up" is table stakes).
     { command -v docker && command -v make && docker compose version && docker buildx version; } >/dev/null 2>&1 || { apt-get update -y && apt-get install -y tmux git curl jq unzip ca-certificates docker.io docker-compose-v2 docker-buildx make; }
+    # AMIs baked before the remap existed have docker running unmapped: apply.
+    docker info 2>/dev/null | grep -q userns || systemctl restart docker
     command -v node >/dev/null || { curl -fsSL --retry 3 https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs; }
     command -v gh >/dev/null || { curl -fsSL --retry 3 https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /usr/share/keyrings/githubcli-archive-keyring.gpg && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list && apt-get update -y && apt-get install -y gh; }
     command -v claude >/dev/null || npm install -g @anthropic-ai/claude-code

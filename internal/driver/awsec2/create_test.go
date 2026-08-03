@@ -161,6 +161,15 @@ func TestRenderUserDataGuards(t *testing.T) {
 			t.Errorf("user-data missing idempotency guard %q", guard)
 		}
 	}
+	// Container-root writes on bind mounts must land agent-owned (the Docker
+	// Desktop ownership behavior repos are written against): daemon config,
+	// the uid-0 mapping, and the restart that applies it on pre-remap bakes.
+	for _, remap := range []string{`{"userns-remap": "agent"}`, "agent:1000:1",
+		"docker info 2>/dev/null | grep -q userns || systemctl restart docker"} {
+		if !strings.Contains(ud, remap) {
+			t.Errorf("user-data missing userns-remap piece %q", remap)
+		}
+	}
 }
 
 // Nothing loose ships by default — but the create warns about env files it

@@ -210,7 +210,11 @@ Targets: **create → attached 60–90s; resume → attached ~30s** (measured
 numbers in §14).
 
 1. **`pier bake`** — prebaked **per-repo** image: agent user, tmux, git, gh,
-   docker (with compose + buildx — docker.io alone is the bare engine), make,
+   docker (with compose + buildx — docker.io alone is the bare engine; the
+   daemon runs userns-remapped to agent, so container-root writes on bind
+   mounts land agent-owned — the ownership translation Docker Desktop does
+   on a Mac, without which compose stacks litter repos with root-owned
+   files), make,
    claude + codex, headless chromium (playwright build + system
    deps, for browser MCPs/skills), supervisor preinstalled — plus whatever
    the repo's `.pier-bake.sh` installs on top (run on the bake instance as
