@@ -27,6 +27,10 @@ type Options struct {
 	// the TUI stays open and the session appears in the list as "creating".
 	// nil falls back to quit-and-create-in-foreground (ActionNew).
 	CreateDetached func(branch string) (logPath string, err error)
+	// Resize + Machines power the m key: Machines lists same-arch picks for a
+	// session so nobody memorizes type names. nil hides the key.
+	Resize   func(s driver.Session, instanceType string) error
+	Machines func(s driver.Session) []driver.Machine
 }
 
 type ActionKind int
@@ -60,6 +64,7 @@ const (
 	modeNew
 	modeConfirm
 	modeSettings
+	modeResize
 )
 
 type model struct {
@@ -82,6 +87,9 @@ type model struct {
 	setIdx   int
 	editing  bool
 	setInput string
+	// resize picker state; machines reload each time m opens the picker
+	machines []driver.Machine
+	machIdx  int
 }
 
 func anyCreating(sessions []driver.Session) bool {
@@ -195,6 +203,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateConfirm(msg)
 		case modeSettings:
 			return m.updateSettings(msg)
+		case modeResize:
+			return m.updateResize(msg)
 		}
 		return m.updateList(msg)
 	}
@@ -240,6 +250,26 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 				return m.fetch()
 			}, tickCmd())
+		}
+	case "m":
+		if len(m.sessions) > 0 && m.opts.Resize != nil && m.opts.Machines != nil {
+			s := m.sessions[m.cursor]
+			if s.State == driver.StateCreating {
+				m.status, m.statusBad = s.Name+" is still setting up — resize once it shows running", false
+				return m, nil
+			}
+			m.machines = m.opts.Machines(s)
+			if len(m.machines) == 0 {
+				m.status, m.statusBad = "no machine picks for this driver — use pier resize <session> <type>", false
+				return m, nil
+			}
+			m.machIdx = 0
+			for i, mc := range m.machines {
+				if mc.Type == s.InstanceType {
+					m.machIdx = i
+				}
+			}
+			m.mode = modeResize
 		}
 	case "s":
 		cfg, err := config.Load()
@@ -300,6 +330,38 @@ func (m model) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		m.editing = true
 		m.setInput = config.Get(*m.cfg, config.Settings[m.setIdx].Key)
+	}
+	return m, nil
+}
+
+func (m model) updateResize(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "q", "esc", "ctrl+c":
+		m.mode = modeList
+	case "up", "k":
+		if m.machIdx > 0 {
+			m.machIdx--
+		}
+	case "down", "j":
+		if m.machIdx < len(m.machines)-1 {
+			m.machIdx++
+		}
+	case "enter":
+		s := m.sessions[m.cursor]
+		t := m.machines[m.machIdx].Type
+		m.mode = modeList
+		if t == s.InstanceType {
+			m.status, m.statusBad = s.Name+" is already a "+t, false
+			return m, nil
+		}
+		m.loading = true
+		m.status, m.statusBad = "resizing "+s.Name+" to "+t+" — a running session rides one park+resume (~40-60s)", false
+		return m, tea.Batch(func() tea.Msg {
+			if err := m.opts.Resize(s, t); err != nil {
+				return sessionsMsg{nil, err}
+			}
+			return m.fetch()
+		}, tickCmd())
 	}
 	return m, nil
 }
@@ -400,6 +462,22 @@ func (m model) View() string {
 		b.WriteString(" " + ui.Keys("enter", "create", "esc", "cancel") + "\n")
 	case modeConfirm:
 		b.WriteString(" " + ui.Warn.Render(fmt.Sprintf("destroy %q and its disk? (y/n)", m.sessions[m.cursor].Name)) + "\n")
+	case modeResize:
+		s := m.sessions[m.cursor]
+		b.WriteString(" " + ui.Dim.Render("resize "+s.Name+" — same-arch machines, billed on-demand while running") + "\n")
+		for i, mc := range m.machines {
+			marker := "   "
+			row := fmt.Sprintf("%-12s  %2s vCPU  %3s GiB  %s", mc.Type, mc.CPU, mc.Mem, mc.Cost)
+			if mc.Type == s.InstanceType {
+				row += "  (current)"
+			}
+			if i == m.machIdx {
+				marker = " " + ui.Accent.Render("▸") + " "
+				row = ui.Bold.Render(row)
+			}
+			b.WriteString(marker + row + "\n")
+		}
+		b.WriteString(" " + ui.Keys("enter", "resize", "esc", "cancel") + "\n")
 	default:
 		if m.status != "" {
 			if m.statusBad {
@@ -408,7 +486,7 @@ func (m model) View() string {
 				b.WriteString(" " + ui.Accent.Render("▸ "+m.status) + "\n")
 			}
 		}
-		b.WriteString(" " + ui.Keys("enter", "attach", "n", "new", "d", "delete", "p", "pin", "s", "settings", "r", "refresh", "q", "quit") + "\n")
+		b.WriteString(" " + ui.Keys("enter", "attach", "n", "new", "d", "delete", "p", "pin", "m", "resize", "s", "settings", "r", "refresh", "q", "quit") + "\n")
 	}
 	return b.String()
 }

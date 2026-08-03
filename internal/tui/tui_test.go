@@ -8,6 +8,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/kerem-kaynak/pier/internal/config"
 	"github.com/kerem-kaynak/pier/internal/driver"
+	"github.com/kerem-kaynak/pier/internal/driver/awsec2"
 )
 
 // View smoke tests: the load-flash bug was View rendering "0 sessions"
@@ -67,6 +68,66 @@ func TestSettingsPage(t *testing.T) {
 	}
 	if cfg.IdleTimeout != "30m" {
 		t.Errorf("bad value leaked into config: %q", cfg.IdleTimeout)
+	}
+}
+
+// The m key opens the resize picker preselected on the session's current
+// type, and enter on that same type is a no-op notice, not a resize call.
+func TestResizePicker(t *testing.T) {
+	resized := ""
+	m := model{loaded: true,
+		sessions: []driver.Session{{Name: "fix-auth", Repo: "myapp", State: driver.StateRunning, InstanceType: "t4g.medium"}},
+		opts: Options{
+			Fetch:    func() ([]driver.Session, error) { return nil, nil },
+			Resize:   func(s driver.Session, itype string) error { resized = itype; return nil },
+			Machines: func(s driver.Session) []driver.Machine { return awsec2.Machines(s.InstanceType) },
+		}}
+	got, _ := m.updateList(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")})
+	m = got.(model)
+	if m.mode != modeResize {
+		t.Fatalf("m must open the picker, got mode=%v status=%q", m.mode, m.status)
+	}
+	if cur := m.machines[m.machIdx].Type; cur != "t4g.medium" {
+		t.Errorf("picker must preselect the current type, got %q", cur)
+	}
+	v := m.View()
+	for _, want := range []string{"resize fix-auth", "t4g.large", "(current)", "vCPU", "GiB"} {
+		if !strings.Contains(v, want) {
+			t.Errorf("picker view missing %q:\n%s", want, v)
+		}
+	}
+
+	// Enter on the current type: notice, no resize.
+	got, cmd := m.updateResize(tea.KeyMsg{Type: tea.KeyEnter})
+	m = got.(model)
+	if cmd != nil || resized != "" {
+		t.Errorf("enter on the current type must not resize, got resized=%q", resized)
+	}
+	if m.mode != modeList || !strings.Contains(m.status, "already") {
+		t.Errorf("want an already-that-size notice back on the list, got mode=%v status=%q", m.mode, m.status)
+	}
+
+	// Reopen, move down one, confirm: the resize command fires.
+	got, _ = m.updateList(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")})
+	m = got.(model)
+	got, _ = m.updateResize(tea.KeyMsg{Type: tea.KeyDown})
+	m = got.(model)
+	want := m.machines[m.machIdx].Type
+	got, cmd = m.updateResize(tea.KeyMsg{Type: tea.KeyEnter})
+	m = got.(model)
+	if cmd == nil {
+		t.Fatal("enter on a different type must return the resize command")
+	}
+	if batch, ok := cmd().(tea.BatchMsg); ok { // Batch wraps, doesn't run
+		for _, c := range batch {
+			c()
+		}
+	}
+	if resized != want {
+		t.Errorf("resize called with %q, want %q", resized, want)
+	}
+	if !m.loading || !strings.Contains(m.status, "resizing fix-auth") {
+		t.Errorf("want spinner + resizing status, got loading=%v status=%q", m.loading, m.status)
 	}
 }
 

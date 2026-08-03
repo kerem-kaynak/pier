@@ -30,17 +30,27 @@ const (
 
 // Session is one instance + its persistent disk.
 type Session struct {
-	ID         string // provider instance ID
-	Name       string // branch-derived session name
-	Repo       string
-	Branch     string
-	User       string // derived from cloud caller identity, never configured
-	Driver     string
-	State      State
-	Strained   bool   // sustained cpu/mem pressure (supervisor beacon) — resize hint
-	Setup      string // repo setup script: "" | "running" | "failed" (supervisor beacon)
-	LastActive time.Time
-	CostNote   string // honest money: "$3/mo parked", "$0.03/h running"
+	ID           string // provider instance ID
+	Name         string // branch-derived session name
+	Repo         string
+	Branch       string
+	User         string // derived from cloud caller identity, never configured
+	Driver       string
+	State        State
+	Strained     bool   // sustained cpu/mem pressure (supervisor beacon) — resize hint
+	Setup        string // repo setup script: "" | "running" | "failed" (supervisor beacon)
+	InstanceType string // provider machine type; feeds the TUI resize picker
+	LastActive   time.Time
+	CostNote     string // honest money: "$3/mo parked", "$0.03/h running"
+}
+
+// Machine is one row in the TUI's resize picker: a curated instance type
+// with its shape and rough on-demand cost, so nobody memorizes type names.
+type Machine struct {
+	Type string
+	CPU  string // vCPUs
+	Mem  string // GiB
+	Cost string
 }
 
 // CreateSpec describes a new session. Create returns as soon as the instance

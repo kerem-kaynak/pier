@@ -866,6 +866,15 @@ func cmdTUI() {
 		Pin: func(s driver.Session) error {
 			return pin(drv, s)
 		},
+		Resize: func(s driver.Session, itype string) error {
+			return drv.Resize(context.Background(), s.ID, itype)
+		},
+		Machines: func(s driver.Session) []driver.Machine {
+			if drv.Name() != "aws-ec2" {
+				return nil // no curated catalog yet — pier resize still works
+			}
+			return awsec2.Machines(s.InstanceType)
+		},
 		CreateDetached: spawnCreate,
 	})
 	if err != nil {

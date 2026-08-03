@@ -83,6 +83,7 @@ type ec2Instance struct {
 	ID     string `json:"id"`
 	State  string `json:"state"`
 	Launch string `json:"launch"`
+	IType  string `json:"itype"`
 	Tags   []struct {
 		Key   string `json:"Key"`
 		Value string `json:"Value"`
@@ -97,7 +98,7 @@ func (d *Driver) List(ctx context.Context) ([]driver.Session, error) {
 	out, err := d.aws(ctx, "ec2", "describe-instances",
 		"--filters", "Name=tag:"+TagManaged+",Values=1", "Name=tag:"+TagUser+",Values="+me,
 		"Name=instance-state-name,Values=pending,running,stopping,stopped",
-		"--query", "Reservations[].Instances[].{id:InstanceId,state:State.Name,launch:LaunchTime,tags:Tags}",
+		"--query", "Reservations[].Instances[].{id:InstanceId,state:State.Name,launch:LaunchTime,itype:InstanceType,tags:Tags}",
 		"--output", "json")
 	if err != nil {
 		return nil, err
@@ -108,7 +109,7 @@ func (d *Driver) List(ctx context.Context) ([]driver.Session, error) {
 	}
 	var sessions []driver.Session
 	for _, in := range raw {
-		s := driver.Session{ID: in.ID, User: me, Driver: d.Name()}
+		s := driver.Session{ID: in.ID, User: me, Driver: d.Name(), InstanceType: in.IType}
 		ready := false
 		for _, t := range in.Tags {
 			switch t.Key {

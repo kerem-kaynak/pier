@@ -123,7 +123,7 @@ commands for an admin to run once. The wizard then works with what exists.
 
 ```
 pier                      the TUI: sessions live-updating
-                          enter attach · n new · d delete · p pin · s settings · r refresh · q quit
+                          enter attach · n new · d delete · p pin · m resize · s settings · r refresh · q quit
 pier <branch> [base]      new session off base (default HEAD), then attach
     -d, --detach          create without attaching
     --idle <dur|never>    idle self-park timeout (default 30m)
@@ -308,6 +308,9 @@ checkout-flow  shop  working (strained)  2h   ~$0.03/h
 
 $ pier resize checkout-flow t4g.xlarge
 ```
+
+Or press `m` in the TUI. It lists same-arch machines with their vCPU, memory
+and hourly cost, so nobody memorizes instance type names.
 
 One park/resume cycle of about 40 seconds, disk and state intact.
 Deliberately not automatic: the VM holds no cloud credentials, and
