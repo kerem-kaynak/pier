@@ -61,6 +61,11 @@ func (d *Driver) sshOpts(id string) []string {
 		// 15s, give up after 4 misses (~60s).
 		"-o", "ServerAliveInterval=15",
 		"-o", "ServerAliveCountMax=4",
+		// The SSM data channel moves ~100KB/s raw. Compression gets ~4x on
+		// the text a dev workflow actually pushes through it (JS modules,
+		// tmux screens), turning a cold Vite page load from minutes into
+		// tens of seconds.
+		"-C",
 	}
 }
 

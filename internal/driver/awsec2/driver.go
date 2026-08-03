@@ -275,8 +275,9 @@ func (d *Driver) MCPLoginCommand(ctx context.Context, id, server string, port in
 }
 
 // PortForwardCommand: plain ssh -L forwards over the SSM tunnel, -N so no
-// remote shell is taken. Runs until interrupted; ~1 MB/s tunnel throughput —
-// plenty for dev browsing and database queries.
+// remote shell is taken. Runs until interrupted. The tunnel is not fast
+// (~100KB/s-1MB/s raw depending on the network); sshOpts' -C compression
+// buys ~4x on dev-server text, which is what makes cold page loads bearable.
 func (d *Driver) PortForwardCommand(ctx context.Context, id string, pairs [][2]int) (*exec.Cmd, error) {
 	args := d.sshOpts(id)
 	for _, p := range pairs {
