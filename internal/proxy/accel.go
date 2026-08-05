@@ -195,8 +195,16 @@ func cacheable(h http.Header) bool {
 	if strings.Contains(cc, "no-store") || strings.Contains(cc, "private") {
 		return false
 	}
-	if v := strings.ToLower(strings.TrimSpace(h.Get("Vary"))); v != "" && v != "accept-encoding" {
-		return false
+	// Vary on Origin or Accept-Encoding is fine: dev traffic is same-origin
+	// (no Origin header, no CORS headers in play — and keepHeaders drops
+	// them from entries anyway). Vite sends "Vary: Origin" on every module,
+	// so rejecting it would disable the accelerator for the main case.
+	for v := range strings.SplitSeq(h.Get("Vary"), ",") {
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "", "origin", "accept-encoding":
+		default:
+			return false
+		}
 	}
 	if strings.Contains(cc, "immutable") {
 		return true

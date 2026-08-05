@@ -106,6 +106,9 @@ func (d *devServer) handler() http.Handler {
 		d.hits[r.URL.Path]++
 		d.inm[r.URL.Path] = r.Header.Get("If-None-Match")
 		d.mu.Unlock()
+		// Vite sends "Vary: Origin" on every dev response (its CORS default).
+		// The cache must shrug it off or the accelerator never engages.
+		w.Header().Set("Vary", "Origin")
 		switch r.URL.Path {
 		case "/app.js":
 			w.Header().Set("Content-Type", "text/javascript")
