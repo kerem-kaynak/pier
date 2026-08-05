@@ -31,7 +31,8 @@ const (
 	TagSession    = "pier:session"
 	TagRepo       = "pier:repo"
 	TagBranch     = "pier:branch"
-	TagReady      = "pier:ready" // create's last act: bootstrap done, attachable
+	TagReady      = "pier:ready"   // create's last act: bootstrap done, attachable
+	TagCreated    = "pier:created" // RFC3339 create time; launch time resets on every resume
 	Workspace     = "/home/agent/work"
 	amiParamBase  = "/aws/service/canonical/ubuntu/server/24.04/stable/current/%s/hvm/ebs-gp3/ami-id"
 )
@@ -135,6 +136,10 @@ func (d *Driver) List(ctx context.Context) ([]driver.Session, error) {
 				s.Branch = t.Value
 			case TagReady:
 				ready = true
+			case TagCreated:
+				if ts, err := time.Parse(time.RFC3339, t.Value); err == nil {
+					s.Created = ts
+				}
 			}
 		}
 		switch in.State {
@@ -154,8 +159,12 @@ func (d *Driver) List(ctx context.Context) ([]driver.Session, error) {
 		default:
 			s.State = driver.StateDead
 		}
-		if ts, err := time.Parse(time.RFC3339, in.Launch); err == nil {
-			s.LastActive = ts
+		// Launch time is the fallback for pre-tag sessions; it resets on
+		// every resume, so the created tag wins whenever present.
+		if s.Created.IsZero() {
+			if ts, err := time.Parse(time.RFC3339, in.Launch); err == nil {
+				s.Created = ts
+			}
 		}
 		s.CostNote = costNote(s.State)
 		sessions = append(sessions, s)

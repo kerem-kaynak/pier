@@ -357,7 +357,7 @@ func cmdLS() {
 	fmt.Fprintln(w, "NAME\tREPO\tSTATE\tAGE\tCOST")
 	anyStrained, anySetupFailed := false, false
 	for _, s := range sessions {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", s.Name, s.Repo, stateLabel(s), age(s.LastActive), s.CostNote)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", s.Name, s.Repo, stateLabel(s), age(s.Created), s.CostNote)
 		anyStrained = anyStrained || s.Strained
 		anySetupFailed = anySetupFailed || s.Setup == "failed"
 	}
@@ -410,11 +410,10 @@ func enrich(drv driver.Driver, sessions []driver.Session) {
 				return
 			}
 			var st struct {
-				State         string    `json:"state"`
-				Since         time.Time `json:"since"`
-				Bootstrapping bool      `json:"bootstrapping"`
-				Strained      bool      `json:"strained"`
-				Setup         string    `json:"setup"`
+				State         string `json:"state"`
+				Bootstrapping bool   `json:"bootstrapping"`
+				Strained      bool   `json:"strained"`
+				Setup         string `json:"setup"`
 			}
 			if json.Unmarshal([]byte(out), &st) != nil {
 				return
@@ -433,9 +432,6 @@ func enrich(drv driver.Driver, sessions []driver.Session) {
 			}
 			s.Strained = st.Strained
 			s.Setup = st.Setup
-			if !st.Since.IsZero() {
-				s.LastActive = st.Since
-			}
 		}(&sessions[i])
 	}
 	wg.Wait()

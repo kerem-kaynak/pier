@@ -37,11 +37,11 @@ type Session struct {
 	User         string // derived from cloud caller identity, never configured
 	Driver       string
 	State        State
-	Strained     bool   // sustained cpu/mem pressure (supervisor beacon) — resize hint
-	Setup        string // repo setup script: "" | "running" | "failed" (supervisor beacon)
-	InstanceType string // provider machine type; feeds the TUI resize picker
-	LastActive   time.Time
-	CostNote     string // honest money: "$3/mo parked", "$0.03/h running"
+	Strained     bool      // sustained cpu/mem pressure (supervisor beacon) — resize hint
+	Setup        string    // repo setup script: "" | "running" | "failed" (supervisor beacon)
+	InstanceType string    // provider machine type; feeds the TUI resize picker
+	Created      time.Time // session creation, not last boot — AGE must never go backward
+	CostNote     string    // honest money: "$3/mo parked", "$0.03/h running"
 }
 
 // Machine is one row in the TUI's resize picker: a curated instance type

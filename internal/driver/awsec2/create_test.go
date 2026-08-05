@@ -311,6 +311,22 @@ func TestPierInclude(t *testing.T) {
 	}
 }
 
+// AGE reads the created tag: launch time resets on every resume and the
+// beacon's state changes are even noisier, so create time must ride a tag.
+func TestTagListCarriesCreateTime(t *testing.T) {
+	spec := driver.CreateSpec{Name: "x", Repo: "/tmp/myrepo", Branch: "main"}
+	for _, tag := range tagList(spec, "me", "pier-x") {
+		if tag["Key"] != TagCreated {
+			continue
+		}
+		if _, err := time.Parse(time.RFC3339, tag["Value"]); err != nil {
+			t.Fatalf("%s value %q is not RFC3339: %v", TagCreated, tag["Value"], err)
+		}
+		return
+	}
+	t.Fatalf("tagList missing %s", TagCreated)
+}
+
 // Carried repo files must land world-readable (exec kept for scripts): the
 // VM's docker daemon is userns-remapped, so a 0600 .env that works under
 // Docker Desktop bind-mounts unreadable to every container on the VM.

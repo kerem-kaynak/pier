@@ -28,7 +28,7 @@ func TestViewStates(t *testing.T) {
 	}
 
 	m.sessions = []driver.Session{
-		{Name: "fix-auth", Repo: "myapp", State: driver.StateWorking, LastActive: time.Now()},
+		{Name: "fix-auth", Repo: "myapp", State: driver.StateWorking, Created: time.Now()},
 		{Name: "big-build", Repo: "myapp", State: driver.StateRunning, Strained: true},
 		{Name: "bad-deps", Repo: "myapp", State: driver.StateIdle, Setup: "failed"},
 	}

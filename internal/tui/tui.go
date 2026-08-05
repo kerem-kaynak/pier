@@ -567,7 +567,7 @@ func (m model) table() string {
 		fmt.Fprintf(&b, "%s%s  %s  %s  %-4s  %s\n",
 			marker, name,
 			ui.Dim.Render(fmt.Sprintf("%-*s", repoW, s.Repo)),
-			state, age(s.LastActive), ui.Dim.Render(s.CostNote))
+			state, age(s.Created), ui.Dim.Render(s.CostNote))
 	}
 	return b.String()
 }

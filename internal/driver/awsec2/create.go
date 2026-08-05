@@ -220,7 +220,7 @@ func (d *Driver) Create(ctx context.Context, spec driver.CreateSpec) (sess *driv
 
 	return &driver.Session{
 		ID: id, Name: spec.Name, Repo: filepath.Base(spec.Repo), Branch: spec.Branch,
-		User: me, Driver: d.Name(), State: driver.StateRunning, LastActive: time.Now(),
+		User: me, Driver: d.Name(), State: driver.StateRunning, Created: time.Now(),
 		CostNote: costNote(driver.StateRunning),
 	}, nil
 }
@@ -299,6 +299,7 @@ func tagList(spec driver.CreateSpec, me, name string) []map[string]string {
 		{"Key": TagSession, "Value": spec.Name},
 		{"Key": TagRepo, "Value": filepath.Base(spec.Repo)},
 		{"Key": TagBranch, "Value": spec.Branch},
+		{"Key": TagCreated, "Value": time.Now().UTC().Format(time.RFC3339)},
 	}
 }
 
