@@ -156,8 +156,9 @@ session checkout-flow ready
 
 # ... in a second terminal: the session's ports, one hostname away ...
 $ pier proxy
-proxy up: running sessions resolve as <session>.pier
-# the agent's dev server, live in your browser: http://checkout-flow.pier:3000
+proxy up — running sessions resolve as <session>.pier (http + https), ports mirror on localhost too
+# the agent's dev server, live in your browser: http://localhost:3000
+# or, when two sessions hold the same port: http://checkout-flow.pier:3000
 
 # ... detach with C-b d, close the laptop, have dinner ...
 
@@ -262,7 +263,7 @@ Headless Chromium ships in the default image, so browser MCPs and skills
 
 ```
 $ pier proxy
-proxy up: running sessions resolve as <session>.pier
+proxy up — running sessions resolve as <session>.pier (http + https), ports mirror on localhost too
 ```
 
 - Open `http://checkout-flow.pier:3000` in a browser, or `psql -h checkout-flow.pier`.
@@ -376,8 +377,8 @@ pier CLI/TUI ── aws cli ──────────▶ EC2 API        (cr
 ```
 
 The supervisor samples every 5 seconds for *attached* (tmux clients, or a
-live forwarded TCP connection) and *busy* (agent process-tree CPU, recent
-pty output):
+live forwarded TCP connection) and *busy* (a running setup script, agent
+process-tree CPU, recent pty output):
 
 - attached or busy resets the idle clock
 - detached and quiet past `idle_timeout` parks
