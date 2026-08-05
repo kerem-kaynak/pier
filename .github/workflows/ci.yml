@@ -25,3 +25,30 @@ jobs:
       # cross-compiled supervisors don't embed
       - name: build
         run: make build
+
+  # The fresh path: what a brew user gets. The formula builds a release
+  # tarball (no .git) with VERSION passed in, so this job does exactly
+  # that instead of building the checkout. macOS is the primary target.
+  smoke:
+    strategy:
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: pack a release-style tarball
+        run: git archive --format=tar.gz --prefix=pier-smoke/ -o "$RUNNER_TEMP/pier-smoke.tar.gz" HEAD
+      - name: build from the tarball like the formula does
+        run: |
+          tar -xzf "$RUNNER_TEMP/pier-smoke.tar.gz" -C "$RUNNER_TEMP"
+          cd "$RUNNER_TEMP/pier-smoke"
+          make build VERSION=v0.0.0-smoke
+      - name: binary runs and reports the passed version
+        run: |
+          out=$("$RUNNER_TEMP/pier-smoke/pier" version)
+          echo "$out"
+          test "$out" = "pier v0.0.0-smoke"
+          "$RUNNER_TEMP/pier-smoke/pier" help >/dev/null
