@@ -1,6 +1,8 @@
 package awsec2
 
 import (
+	"archive/tar"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -123,6 +125,10 @@ func TestRenderBootstrapModes(t *testing.T) {
 		`echo running > ~/.pier-setup.status`,
 		`c=\${PIPESTATUS[0]}`,
 		`pier setup: FAILED (exit \$c)`,
+		// The failure rename must target its own pane: a bare rename-window
+		// resolved to the attached client's current window and mislabeled
+		// the user's shell as setup-failed.
+		`tmux rename-window -t \$TMUX_PANE setup-failed`,
 	} {
 		if !strings.Contains(origin, want) {
 			t.Errorf("origin-mode bootstrap missing %q", want)
@@ -302,5 +308,52 @@ func TestPierInclude(t *testing.T) {
 		"secrets.txt", "uploads/fixtures/a.bin"}
 	if !slices.Equal(got, want) {
 		t.Errorf("with .pier-include = %v, want %v", got, want)
+	}
+}
+
+// Carried repo files must land world-readable (exec kept for scripts): the
+// VM's docker daemon is userns-remapped, so a 0600 .env that works under
+// Docker Desktop bind-mounts unreadable to every container on the VM.
+func TestFilesTarWidensCarriedModes(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, ".pier-include"), []byte(".env\nrun.sh\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".env"), []byte("K=v\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "run.sh"), []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	dst := filepath.Join(t.TempDir(), "files.tar")
+	if err := buildFilesTar(dst, nil, root, nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	want := map[string]int64{"repo/.env": 0o644, "repo/run.sh": 0o755}
+	tr := tar.NewReader(f)
+	for {
+		h, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if mode, ok := want[h.Name]; ok {
+			if h.Mode != mode {
+				t.Errorf("%s carried as %o, want %o", h.Name, h.Mode, mode)
+			}
+			delete(want, h.Name)
+		}
+	}
+	for name := range want {
+		t.Errorf("%s missing from the files tar", name)
 	}
 }
