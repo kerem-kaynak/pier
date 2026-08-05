@@ -10,7 +10,9 @@
 //	            (someone's browser/psql on a mirrored port — never park
 //	            under an open connection; a forgotten tab keeping the VM
 //	            awake is the user's call)
-//	busy     := any claude/codex process above CPU threshold,
+//	busy     := the repo setup script still running (parking mid-setup
+//	            would SIGTERM the build and brand the session failed),
+//	            any claude/codex process above CPU threshold,
 //	            or a pty written to within the last ~30s
 //
 // attached or busy resets the idle clock. Detached+quiet past idle_timeout
@@ -72,8 +74,9 @@ func main() {
 	for {
 		idleTimeout, cap_ := readConf()
 		listening, tunnels := netSnapshot()
+		setup := setupState()
 		attached := tmuxAttached() || tunnels > 0
-		busy := agentBusy() || ptyActive()
+		busy := setup == "running" || agentBusy() || ptyActive()
 
 		now := time.Now()
 		st := "idle"
@@ -99,7 +102,7 @@ func main() {
 		last.Listening, last.Tunnels = listening, tunnels
 		last.Bootstrapping = bootstrapping()
 		last.Strained = strained()
-		last.Setup = setupState()
+		last.Setup = setup
 		writeStatus(last)
 
 		if idleTimeout > 0 && !attached && !busy && now.Sub(idleSince) > idleTimeout {
