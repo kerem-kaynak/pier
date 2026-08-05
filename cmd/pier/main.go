@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
+	"log"
 	"net"
 	"os"
 	"os/exec"
@@ -602,6 +604,10 @@ func mcpAuthed(credJSON, server string) bool {
 // connections keep the session from parking. All the machinery lives in
 // internal/proxy; runs in the foreground until ctrl-c.
 func cmdProxy() {
+	// net/http logs transport chatter ("Unsolicited response received...")
+	// through the global logger when probed ports answer oddly. All of the
+	// proxy's real output goes through Options.Out, so drop the rest.
+	log.SetOutput(io.Discard)
 	_, drv := loadDriver()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
