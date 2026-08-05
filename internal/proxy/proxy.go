@@ -82,8 +82,18 @@ func Run(ctx context.Context, drv driver.Driver, opt Options) error {
 		return err
 	}
 	ctlDir := filepath.Join(opt.StateDir, "proxy")
-	if err := os.MkdirAll(ctlDir, 0o700); err != nil {
+	cacheDir := filepath.Join(ctlDir, "cache")
+	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
 		return err
+	}
+	// Sweep caches of sessions that haven't run in a month — a removed
+	// session must not keep megabytes on disk forever.
+	if ents, _ := filepath.Glob(filepath.Join(cacheDir, "*.gob")); ents != nil {
+		for _, p := range ents {
+			if fi, err := os.Stat(p); err == nil && time.Since(fi.ModTime()) > 30*24*time.Hour {
+				_ = os.Remove(p)
+			}
+		}
 	}
 	mint, err := loadOrCreateCA(opt.StateDir)
 	if err != nil {
@@ -165,8 +175,9 @@ func Run(ctx context.Context, drv driver.Driver, opt Options) error {
 				w := &worker{
 					id: id, name: hostname(s.Name), dest: dest, ip: ip,
 					shadow: shadowOf(ip), tcfg: tcfg,
-					ctl:  filepath.Join(ctlDir, id+".ctl"),
-					opts: sshOpts, out: opt.Out, names: names, lh: lh,
+					ctl:      filepath.Join(ctlDir, id+".ctl"),
+					cacheDir: cacheDir,
+					opts:     sshOpts, out: opt.Out, names: names, lh: lh,
 					relays: map[int]net.Listener{},
 					accels: map[int]*accel{},
 					lports: map[int]net.Listener{},
@@ -205,6 +216,7 @@ type worker struct {
 	ip, shadow     net.IP
 	tcfg           *tls.Config
 	ctl            string
+	cacheDir       string
 	opts           []string
 	out            io.Writer
 	names          *table
@@ -344,8 +356,9 @@ func (w *worker) sync(ports []int, forwards map[int]bool) {
 		} else {
 			w.relays[p] = ln
 			dial := net.JoinHostPort(w.shadow.String(), strconv.Itoa(p))
-			ac := newAccel(dial)
+			ac := newAccel(dial, filepath.Join(w.cacheDir, fmt.Sprintf("%s-%d.gob", w.id, p)))
 			w.accels[p] = ac
+			go ac.warm(net.JoinHostPort("localhost", strconv.Itoa(p)))
 			go serveRelay(ln, dial, w.tcfg, ac)
 			if lln, busy := w.lh.claim(p, w.id, w.name); lln != nil {
 				w.lports[p] = lln

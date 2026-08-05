@@ -6,8 +6,11 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -110,6 +113,10 @@ func (d *devServer) handler() http.Handler {
 		// The cache must shrug it off or the accelerator never engages.
 		w.Header().Set("Vary", "Origin")
 		switch r.URL.Path {
+		case "/":
+			// No ETag: uncacheable HTML, the warm probe must scan it anyway.
+			w.Header().Set("Content-Type", "text/html")
+			io.WriteString(w, `<script type="module" src="/app.js"></script>`)
 		case "/app.js":
 			w.Header().Set("Content-Type", "text/javascript")
 			w.Header().Set("Etag", `W/"v1"`)
@@ -135,6 +142,128 @@ func (d *devServer) count(path string) int {
 	return d.hits[path]
 }
 
+// The warm probe must crawl the whole import graph from GET / with no
+// client involved, even though the HTML itself carries no ETag.
+func TestWarmCrawlsWithoutClients(t *testing.T) {
+	dev := &devServer{hits: map[string]int{}, inm: map[string]string{}}
+	backend := httptest.NewServer(dev.handler())
+	defer backend.Close()
+	ac := newAccel(backend.Listener.Addr().String(), "")
+	defer ac.Close()
+
+	ac.warm(backend.Listener.Addr().String())
+	deadline := time.Now().Add(5 * time.Second)
+	for dev.count("/dep.js") == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("warm never reached the leaf of the import graph")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if n := dev.count("/"); n != 1 {
+		t.Errorf("/ probed %d times, want 1", n)
+	}
+	if n := dev.count("/app.js"); n != 1 {
+		t.Errorf("/app.js fetched %d times, want 1", n)
+	}
+}
+
+// A client GET for a key the prefetcher is already fetching must wait for
+// that fetch instead of racing it upstream — a browser storming a crawl in
+// progress would otherwise double every request against the dev server.
+func TestClientCoalescesOntoPrefetch(t *testing.T) {
+	var hits atomic.Int32
+	release := make(chan struct{})
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		<-release
+		w.Header().Set("Content-Type", "text/javascript")
+		w.Header().Set("Etag", `W/"s1"`)
+		io.WriteString(w, "export {}")
+	}))
+	defer backend.Close()
+	addr := backend.Listener.Addr().String()
+	ac := newAccel(addr, "")
+	defer ac.Close()
+
+	u, _ := url.Parse("http://" + addr + "/slow.js")
+	ac.prefetch(u, addr)
+	deadline := time.Now().Add(5 * time.Second)
+	for hits.Load() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("prefetch never reached the backend")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	got := make(chan *http.Response, 1)
+	go func() {
+		req, _ := http.NewRequest(http.MethodGet, "http://"+addr+"/slow.js", nil)
+		if resp, err := ac.RoundTrip(req); err == nil {
+			got <- resp
+		}
+	}()
+	time.Sleep(50 * time.Millisecond) // client should now be parked on the inflight channel
+	close(release)
+	select {
+	case resp := <-got:
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK || string(b) != "export {}" {
+			t.Errorf("coalesced response: %d %q", resp.StatusCode, b)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("client never got a response")
+	}
+	if n := hits.Load(); n != 1 {
+		t.Errorf("backend hit %d times, want 1 (client must ride the prefetch)", n)
+	}
+}
+
+// The cache must survive a restart: entries reload from disk, immutable
+// ones serve without an upstream trip, ETagged ones revalidate with the
+// stored ETag before their body is reused.
+func TestCachePersistsAcrossRestarts(t *testing.T) {
+	dev := &devServer{hits: map[string]int{}, inm: map[string]string{}}
+	backend := httptest.NewServer(dev.handler())
+	defer backend.Close()
+	addr := backend.Listener.Addr().String()
+	path := filepath.Join(t.TempDir(), "port.gob")
+
+	get := func(a *accel, p string) *http.Response {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodGet, "http://"+addr+p, nil)
+		resp, err := a.RoundTrip(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return resp
+	}
+
+	ac := newAccel(addr, path)
+	get(ac, "/app.js")
+	get(ac, "/dep.js?v=abc")
+	ac.Close()
+
+	ac2 := newAccel(addr, path)
+	defer ac2.Close()
+	before := dev.count("/dep.js")
+	get(ac2, "/dep.js?v=abc")
+	if n := dev.count("/dep.js"); n != before {
+		t.Errorf("immutable dep refetched after restart (%d -> %d hits)", before, n)
+	}
+	if resp := get(ac2, "/app.js"); resp.StatusCode != http.StatusOK {
+		t.Errorf("app.js after restart: %d, want 200 from revalidated cache", resp.StatusCode)
+	}
+	dev.mu.Lock()
+	inm := dev.inm["/app.js"]
+	dev.mu.Unlock()
+	if !strings.Contains(inm, `W/"v1"`) {
+		t.Errorf("restart revalidation sent If-None-Match %q, want the stored ETag", inm)
+	}
+}
+
 // The accelerator contract end to end through a real relay listener: cache
 // immutable deps forever, prefetch imports before the browser asks, share
 // one upstream validation per burst, and revalidate with the dev server's
@@ -155,7 +284,7 @@ func TestAccelCachesPrefetchesRevalidates(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer front.Close()
-	ac := newAccel(backendAddr)
+	ac := newAccel(backendAddr, "")
 	defer ac.Close()
 	go serveRelay(front, backendAddr, tcfg, ac)
 	base := "http://" + front.Addr().String()

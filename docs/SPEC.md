@@ -205,10 +205,16 @@ only `Driver.SSHTarget` (the raw ssh recipe) and the beacon's port list.
   marks cacheable (immutable dep chunks forever — the URL hash changes when
   they do — ETagged files with revalidation), and scans JS/HTML responses
   for imports, prefetching the module graph 64-wide over pooled backend
-  connections before the browser asks. Vite-style dev servers (1500 files,
-  6 browser connections, one WAN round trip each = ~36s) load in seconds;
-  a reload becomes one parallel revalidation burst. WebSockets, POSTs,
-  streaming and non-HTTP traffic pass through untouched.
+  connections before the browser asks. The moment a port is mirrored the
+  accelerator warms itself: one GET / and the crawl fills the cache before
+  any browser opens, so even the first load starts warm. A client request
+  for something already being prefetched waits for it instead of racing it
+  upstream. The cache persists on disk across proxy restarts and parks;
+  reloaded entries revalidate against the VM before their bodies are
+  reused. Vite-style dev servers (1500 files, 6 browser connections, one
+  WAN round trip each = ~36s) load in seconds; a reload becomes one
+  parallel revalidation burst. WebSockets, POSTs, streaming and non-HTTP
+  traffic pass through untouched.
 - **Park-neutral by design**: masters and beacon polls don't touch tmux,
   ptys, or forwarded sockets, so watching a session doesn't keep it awake —
   only actual connections do (§6). Parked sessions' names stop resolving

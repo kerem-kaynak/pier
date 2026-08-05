@@ -272,7 +272,9 @@ proxy up: running sessions resolve as <session>.pier
   that only trust `http://localhost:<port>` keep working unchanged.
 - Dev servers are accelerated. The proxy caches modules on your machine
   and prefetches imports in parallel, so vite-style servers load in
-  seconds over the WAN instead of one round trip per file.
+  seconds over the WAN instead of one round trip per file. The cache
+  warms itself as soon as a port appears, before you open the browser.
+  It persists on disk, so a proxy restart starts warm too.
 - A live connection counts as attachment, so a session never parks under
   your open browser tab.
 - One sudo on first run. macOS only for now.

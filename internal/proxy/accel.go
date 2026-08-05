@@ -16,6 +16,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/gob"
 	"fmt"
 	"io"
 	"log"
@@ -23,6 +24,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -74,19 +76,26 @@ func (e *entry) respond(req *http.Request) *http.Response {
 // share one cache), a reverse proxy whose RoundTripper is the cache, and
 // the prefetcher. Non-HTTP connections never reach it.
 type accel struct {
-	tr  *http.Transport // pooled connections to the session port
-	srv *http.Server
-	ln  *chanListener
-	sem chan struct{} // prefetch lanes
+	tr        *http.Transport // pooled connections to the session port
+	srv       *http.Server
+	ln        *chanListener
+	sem       chan struct{} // prefetch lanes
+	cachePath string        // "" = memory only
+	closeOnce sync.Once
 
 	mu       sync.Mutex
 	store    map[string]*entry
 	bytes    int
-	inflight map[string]bool
+	inflight map[string]chan struct{} // closed when the prefetch lands
 }
 
-func newAccel(backend string) *accel {
+// prefetchMark tags the prefetcher's own requests so they never wait on
+// their own inflight channel.
+type prefetchMark struct{}
+
+func newAccel(backend, cachePath string) *accel {
 	a := &accel{
+		cachePath: cachePath,
 		tr: &http.Transport{
 			// Every URL host dials the session port: the relay is the origin.
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
@@ -100,7 +109,7 @@ func newAccel(backend string) *accel {
 		ln:       newChanListener(),
 		sem:      make(chan struct{}, prefetchLanes),
 		store:    map[string]*entry{},
-		inflight: map[string]bool{},
+		inflight: map[string]chan struct{}{},
 	}
 	silent := log.New(io.Discard, "", 0)
 	a.srv = &http.Server{
@@ -117,6 +126,7 @@ func newAccel(backend string) *accel {
 		},
 		ErrorLog: silent,
 	}
+	a.load()
 	go func() { _ = a.srv.Serve(a.ln) }()
 	return a
 }
@@ -124,9 +134,84 @@ func newAccel(backend string) *accel {
 func (a *accel) push(c net.Conn) { a.ln.push(c) }
 
 func (a *accel) Close() {
+	a.closeOnce.Do(a.save)
 	a.ln.Close()
 	_ = a.srv.Close()
 	a.tr.CloseIdleConnections()
+}
+
+// --- persistence ---------------------------------------------------------------
+
+// The store survives the process: parks, proxy restarts and reboots would
+// otherwise each cost a full re-crawl at whatever rate the dev server can
+// emit bodies. Reloaded entries come back with checked zero — stale — so
+// the first touch revalidates each one against the VM (a burst of cheap
+// 304s), and nothing is ever served without the dev server's say-so.
+// Immutable entries are trusted as ever: their URL hash is their identity.
+
+const cacheFormat = 1
+
+type persistEntry struct {
+	Key, Etag string
+	Body      []byte
+	Header    http.Header
+	Immutable bool
+}
+
+func (a *accel) load() {
+	if a.cachePath == "" {
+		return
+	}
+	f, err := os.Open(a.cachePath)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	dec := gob.NewDecoder(f)
+	var format int
+	var pes []persistEntry
+	if dec.Decode(&format) != nil || format != cacheFormat || dec.Decode(&pes) != nil {
+		os.Remove(a.cachePath)
+		return
+	}
+	for _, pe := range pes {
+		if a.bytes+len(pe.Body) > maxStore {
+			break
+		}
+		a.store[pe.Key] = &entry{body: pe.Body, header: pe.Header, etag: pe.Etag, immutable: pe.Immutable}
+		a.bytes += len(pe.Body)
+	}
+}
+
+func (a *accel) save() {
+	if a.cachePath == "" {
+		return
+	}
+	a.mu.Lock()
+	pes := make([]persistEntry, 0, len(a.store))
+	for k, e := range a.store {
+		pes = append(pes, persistEntry{Key: k, Etag: e.etag, Body: e.body, Header: e.header, Immutable: e.immutable})
+	}
+	a.mu.Unlock()
+	if len(pes) == 0 {
+		return
+	}
+	tmp := a.cachePath + ".tmp"
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return
+	}
+	enc := gob.NewEncoder(f)
+	if enc.Encode(cacheFormat) != nil || enc.Encode(pes) != nil {
+		f.Close()
+		os.Remove(tmp)
+		return
+	}
+	if f.Close() != nil {
+		os.Remove(tmp)
+		return
+	}
+	_ = os.Rename(tmp, a.cachePath)
 }
 
 // RoundTrip is the cache. Only plain GETs participate — upgrades, ranges and
@@ -143,6 +228,28 @@ func (a *accel) RoundTrip(req *http.Request) (*http.Response, error) {
 	a.mu.Unlock()
 	if fresh {
 		return e.respond(req), nil
+	}
+	// A miss the prefetcher is already fetching: wait for it instead of
+	// racing it upstream — a browser storming a crawl-in-progress would
+	// otherwise double every request against the dev server.
+	if req.Context().Value(prefetchMark{}) == nil {
+		a.mu.Lock()
+		ch := a.inflight[key]
+		a.mu.Unlock()
+		if ch != nil {
+			select {
+			case <-ch:
+			case <-req.Context().Done():
+				return nil, req.Context().Err()
+			}
+			a.mu.Lock()
+			e = a.store[key]
+			fresh = e != nil && (e.immutable || time.Since(e.checked) < revalWindow)
+			a.mu.Unlock()
+			if fresh {
+				return e.respond(req), nil
+			}
+		}
 	}
 
 	up := req.Clone(req.Context())
@@ -185,6 +292,37 @@ func (a *accel) RoundTrip(req *http.Request) (*http.Response, error) {
 	a.put(key, ne)
 	go a.scan(*req.URL, req.Host, ne)
 	return ne.respond(req), nil
+}
+
+// warm pulls the app through the cache before any browser asks: one GET /
+// through RoundTrip, and the scanner + prefetcher crawl the import graph
+// from there. Called when a relay comes up, so the first page load a user
+// ever sees starts from a populated cache instead of paying one WAN round
+// trip per module. If the HTML itself isn't cacheable (no ETag), it still
+// gets scanned here. Ports that don't speak HTTP fail the single probe
+// quietly and are left alone.
+func (a *accel) warm(host string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+host+"/", nil)
+	if err != nil {
+		return
+	}
+	req.Host = host
+	resp, err := a.RoundTrip(req)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.Contains(resp.Header.Get("Content-Type"), "html") {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxEntry))
+	if err != nil {
+		return
+	}
+	a.scan(*req.URL, host, &entry{body: body, header: keepHeaders(resp.Header)})
 }
 
 // cacheable: the dev server must opt the response in (immutable, or an ETag
@@ -304,11 +442,12 @@ func (a *accel) prefetch(t *url.URL, host string) {
 	key := t.RequestURI()
 	a.mu.Lock()
 	e := a.store[key]
-	if (e != nil && (e.immutable || time.Since(e.checked) < revalWindow)) || a.inflight[key] {
+	if (e != nil && (e.immutable || time.Since(e.checked) < revalWindow)) || a.inflight[key] != nil {
 		a.mu.Unlock()
 		return
 	}
-	a.inflight[key] = true
+	ch := make(chan struct{})
+	a.inflight[key] = ch
 	a.mu.Unlock()
 	go func() {
 		a.sem <- struct{}{}
@@ -317,9 +456,11 @@ func (a *accel) prefetch(t *url.URL, host string) {
 			a.mu.Lock()
 			delete(a.inflight, key)
 			a.mu.Unlock()
+			close(ch)
 		}()
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
+		ctx = context.WithValue(ctx, prefetchMark{}, true)
 		u := *t
 		u.Scheme, u.Host = "http", host
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
