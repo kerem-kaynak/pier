@@ -268,6 +268,11 @@ proxy up: running sessions resolve as <session>.pier
 - Open `http://checkout-flow.pier:3000` in a browser, or `psql -h checkout-flow.pier`.
 - `https://checkout-flow.pier:3000` also works, on the same port.
 - Ports the session listens on are discovered and mirrored live.
+- Ports also appear on plain `localhost`. Auth callbacks and CORS rules
+  that only trust `http://localhost:<port>` keep working unchanged.
+- Dev servers are accelerated. The proxy caches modules on your machine
+  and prefetches imports in parallel, so vite-style servers load in
+  seconds over the WAN instead of one round trip per file.
 - A live connection counts as attachment, so a session never parks under
   your open browser tab.
 - One sudo on first run. macOS only for now.

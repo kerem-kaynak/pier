@@ -13,6 +13,13 @@
 // pier contributes only Driver.SSHTarget (the raw ssh recipe) and the
 // supervisor's "listening" beacon field.
 //
+// Each port also mirrors onto plain localhost (first session wins a
+// contested port), because origin allow-lists — OAuth dashboards, CORS
+// configs — trust http://localhost:<port> and nothing else. And every
+// mirrored HTTP port runs through the accelerator (accel.go), so dev
+// servers that fan the app out as thousands of module files load at local
+// speed instead of one WAN round trip per file.
+//
 // Live connections through a mirrored port count as attachment in the
 // supervisor, so a session never parks under an open browser tab or psql —
 // and a forgotten tab keeping a VM awake is deliberately the user's problem.
@@ -93,7 +100,7 @@ func Run(ctx context.Context, drv driver.Driver, opt Options) error {
 		return fmt.Errorf("dns: %w%s", err, hint)
 	}
 	defer dns.Close()
-	fmt.Fprintln(opt.Out, ui.Bold.Render("proxy up")+ui.Dim.Render(" — running sessions resolve as <session>."+domain+" (http + https); ctrl-c to stop"))
+	fmt.Fprintln(opt.Out, ui.Bold.Render("proxy up")+ui.Dim.Render(" — running sessions resolve as <session>."+domain+" (http + https), ports mirror on localhost too; ctrl-c to stop"))
 	if ca := caPath(opt.StateDir); !caTrusted(ca) {
 		fmt.Fprintln(opt.Out, ui.Warn.Render("! https: pier's local CA isn't trusted yet — browsers will warn on https://<session>."+domain+" URLs"))
 		fmt.Fprintln(opt.Out, ui.Dim.Render("  trust it once (http works either way): "+trustHint(ca)))
@@ -101,6 +108,7 @@ func Run(ctx context.Context, drv driver.Driver, opt Options) error {
 
 	workers := map[string]*worker{}
 	slots := &slots{byID: map[string]int{}}
+	lh := &lhostTable{owners: map[int]lhostOwner{}}
 	var wg sync.WaitGroup
 	first := true
 
@@ -158,8 +166,10 @@ func Run(ctx context.Context, drv driver.Driver, opt Options) error {
 					id: id, name: hostname(s.Name), dest: dest, ip: ip,
 					shadow: shadowOf(ip), tcfg: tcfg,
 					ctl:  filepath.Join(ctlDir, id+".ctl"),
-					opts: sshOpts, out: opt.Out, names: names,
+					opts: sshOpts, out: opt.Out, names: names, lh: lh,
 					relays: map[int]net.Listener{},
+					accels: map[int]*accel{},
+					lports: map[int]net.Listener{},
 					done:   make(chan struct{}),
 				}
 				w.ctx, w.cancel = context.WithCancel(ctx)
@@ -198,7 +208,10 @@ type worker struct {
 	opts           []string
 	out            io.Writer
 	names          *table
+	lh             *lhostTable
 	relays         map[int]net.Listener
+	accels         map[int]*accel
+	lports         map[int]net.Listener
 	ctx            context.Context
 	cancel         context.CancelFunc
 	done           chan struct{}
@@ -209,6 +222,13 @@ func (w *worker) run() {
 	defer func() { // relays die with the worker; the ssh forwards die with the master
 		for _, ln := range w.relays {
 			ln.Close()
+		}
+		for _, ac := range w.accels {
+			ac.Close()
+		}
+		for p, ln := range w.lports {
+			ln.Close()
+			w.lh.release(p, w.id)
 		}
 	}()
 	_ = os.Remove(w.ctl) // stale socket from a crashed proxy blocks -M
@@ -323,7 +343,16 @@ func (w *worker) sync(ports []int, forwards map[int]bool) {
 			w.logf(ui.Warn.Render("! %s.%s: relay on %d failed: %v"), w.name, domain, p, err)
 		} else {
 			w.relays[p] = ln
-			go serveRelay(ln, net.JoinHostPort(w.shadow.String(), strconv.Itoa(p)), w.tcfg)
+			dial := net.JoinHostPort(w.shadow.String(), strconv.Itoa(p))
+			ac := newAccel(dial)
+			w.accels[p] = ac
+			go serveRelay(ln, dial, w.tcfg, ac)
+			if lln, busy := w.lh.claim(p, w.id, w.name); lln != nil {
+				w.lports[p] = lln
+				go serveRelay(lln, dial, w.tcfg, ac)
+			} else {
+				w.logf(ui.Warn.Render("! localhost:%d %s — use %s.%s:%d"), p, busy, w.name, domain, p)
+			}
 		}
 		forwards[p] = true // even on failure: converge, don't spam retries
 		changed = true
@@ -337,20 +366,36 @@ func (w *worker) sync(ports []int, forwards map[int]bool) {
 			ln.Close()
 			delete(w.relays, p)
 		}
+		if ac, ok := w.accels[p]; ok {
+			ac.Close()
+			delete(w.accels, p)
+		}
+		if ln, ok := w.lports[p]; ok {
+			ln.Close()
+			w.lh.release(p, w.id)
+			delete(w.lports, p)
+		}
 		delete(forwards, p)
 		changed = true
 	}
 	if changed {
 		list := "(none)"
 		if open := slices.Sorted(maps.Keys(forwards)); len(open) > 0 {
-			parts := make([]string, len(open))
-			for i, p := range open {
-				parts[i] = strconv.Itoa(p)
-			}
-			list = strings.Join(parts, " ")
+			list = intList(open)
+		}
+		if mirrored := slices.Sorted(maps.Keys(w.lports)); len(mirrored) > 0 {
+			list += " · localhost: " + intList(mirrored)
 		}
 		w.logf("  %s %s", ui.Bold.Render(w.name+"."+domain), ui.Dim.Render("ports: "+list))
 	}
+}
+
+func intList(ns []int) string {
+	parts := make([]string, len(ns))
+	for i, n := range ns {
+		parts[i] = strconv.Itoa(n)
+	}
+	return strings.Join(parts, " ")
 }
 
 // spec binds ssh's forward on the shadow IP: the public ip:port belongs to
@@ -407,6 +452,38 @@ func (t *table) drop(name string, ip net.IP) {
 	defer t.mu.Unlock()
 	if have, ok := t.m[name]; ok && have.Equal(ip) {
 		delete(t.m, name)
+	}
+}
+
+// lhostTable hands 127.0.0.1 ports to sessions, first claim wins and keeps
+// the port until it stops listening. The .pier hostname always works as the
+// tiebreaker for the losers.
+type lhostTable struct {
+	mu     sync.Mutex
+	owners map[int]lhostOwner
+}
+
+type lhostOwner struct{ id, name string }
+
+func (t *lhostTable) claim(port int, id, name string) (net.Listener, string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if o, taken := t.owners[port]; taken {
+		return nil, "mirrors " + o.name
+	}
+	ln, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+	if err != nil {
+		return nil, "is taken by something local"
+	}
+	t.owners[port] = lhostOwner{id, name}
+	return ln, ""
+}
+
+func (t *lhostTable) release(port int, id string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if o, ok := t.owners[port]; ok && o.id == id {
+		delete(t.owners, port)
 	}
 }
 

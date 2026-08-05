@@ -173,28 +173,40 @@ func trustHint(certPath string) string {
 
 // serveRelay accepts on ln until it closes, piping each connection to dial
 // (the shadow IP where ssh's forward listens) and TLS-terminating the ones
-// that arrive as handshakes.
-func serveRelay(ln net.Listener, dial string, tcfg *tls.Config) {
+// that arrive as handshakes. HTTP connections are handed to ac instead of
+// piped, so the accelerator can answer them; a nil ac pipes everything.
+func serveRelay(ln net.Listener, dial string, tcfg *tls.Config, ac *accel) {
 	for {
 		c, err := ln.Accept()
 		if err != nil {
 			return
 		}
-		go pipe(c, dial, tcfg)
+		go pipe(c, dial, tcfg, ac)
 	}
 }
 
-func pipe(c net.Conn, dial string, tcfg *tls.Config) {
-	defer c.Close()
+func pipe(c net.Conn, dial string, tcfg *tls.Config, ac *accel) {
 	br := bufio.NewReader(c)
 	first, err := br.Peek(1)
 	if err != nil {
+		c.Close()
 		return
 	}
 	var client net.Conn = bufConn{c, br}
 	if first[0] == 0x16 { // a TLS handshake record; anything else pipes raw
 		client = tls.Server(client, tcfg)
 	}
+	if ac != nil {
+		// Sniff again inside any TLS wrapping: HTTP goes to the accelerator,
+		// which owns the connection from here; everything else pipes raw.
+		cbr := bufio.NewReader(client)
+		if sniffHTTP(cbr) {
+			ac.push(bufConn{client, cbr})
+			return
+		}
+		client = bufConn{client, cbr}
+	}
+	defer c.Close()
 	backend, err := net.DialTimeout("tcp", dial, 10*time.Second)
 	if err != nil {
 		return

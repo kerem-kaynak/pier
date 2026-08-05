@@ -80,7 +80,7 @@ func TestRelaySniffsTLSAndPlain(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer front.Close()
-	go serveRelay(front, backend.Addr().String(), tcfg)
+	go serveRelay(front, backend.Addr().String(), tcfg, nil)
 
 	echo := func(c net.Conn) {
 		t.Helper()

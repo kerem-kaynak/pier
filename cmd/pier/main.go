@@ -56,7 +56,8 @@ const usage = `usage:
   pier mcp login <session>  authenticate every MCP server that still needs it
                             (one browser approval each; add a server name to redo one)
   pier proxy                every running session as <session>.pier — open ports
-                            mirrored live for your browser/psql (macOS; one sudo)
+                            mirrored live on the name and on localhost, dev
+                            servers accelerated (macOS; one sudo)
   pier port <session> <port> [port...]  forward ports by hand until ctrl-c
                             (3000 = same both sides, 8080:3000 = local:session)
   pier rm <session> [-f]    destroy session and its disk

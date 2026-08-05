@@ -195,6 +195,20 @@ only `Driver.SSHTarget` (the raw ssh recipe) and the beacon's port list.
   channels (no new SSM sessions, no AWS API); forwards are added/removed
   live with `ssh -O forward/cancel -L <ip>:<port>:localhost:<port>` as the
   port list changes. Stock OpenSSH, shell-out only — no SSH library.
+- **localhost too**: every mirrored port also binds `127.0.0.1:<port>`,
+  because origin allow-lists (OAuth dashboards, CORS configs) trust
+  `http://localhost:<port>` and nothing else — apps with strict auth
+  callbacks work with zero dashboard changes. First session wins a
+  contested port (notice printed); the `.pier` name is the tiebreaker.
+- **Accelerated HTTP**: the relay sniffs each connection; HTTP is answered
+  by a per-port accelerator instead of piped. It caches what the dev server
+  marks cacheable (immutable dep chunks forever — the URL hash changes when
+  they do — ETagged files with revalidation), and scans JS/HTML responses
+  for imports, prefetching the module graph 64-wide over pooled backend
+  connections before the browser asks. Vite-style dev servers (1500 files,
+  6 browser connections, one WAN round trip each = ~36s) load in seconds;
+  a reload becomes one parallel revalidation burst. WebSockets, POSTs,
+  streaming and non-HTTP traffic pass through untouched.
 - **Park-neutral by design**: masters and beacon polls don't touch tmux,
   ptys, or forwarded sockets, so watching a session doesn't keep it awake —
   only actual connections do (§6). Parked sessions' names stop resolving
@@ -352,7 +366,8 @@ pier attach <match>     reattach; resumes if parked
 pier mcp login <match> [server]  browser-auth every MCP server that still needs it, sequentially
                         (callback rides the tunnel; server arg = redo just that one)
 pier proxy              every running session as <session>.pier, listening ports mirrored
-                        live onto a per-session loopback IP (§6.1; macOS, one sudo)
+                        live onto a per-session loopback IP and onto localhost, HTTP
+                        accelerated (§6.1; macOS, one sudo)
 pier port <match> <p> [p...]  manual port forwards, zero-sudo any-OS fallback (3000 or 8080:3000)
 pier rm <match>         destroy (instance + disk)
 pier keep <match>       disable auto-park for a session
