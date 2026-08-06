@@ -165,6 +165,10 @@ func TestRenderBootstrapModes(t *testing.T) {
 		// only carries +x when the author set it) must not skip silently.
 		`if [ -f "$setup" ]; then`,
 		`bash $setup 2>&1`,
+		// The cloud-init wait must guard on binaries the stock image LACKS
+		// (Ubuntu ships git/tmux, so those never triggered the wait and
+		// setup raced the installs it depends on).
+		`command -v docker >/dev/null && command -v node >/dev/null && command -v claude >/dev/null || sudo cloud-init status --wait`,
 		`c=\${PIPESTATUS[0]}`,
 		`pier setup: FAILED (exit \$c)`,
 		// The failure rename must target its own pane: a bare rename-window

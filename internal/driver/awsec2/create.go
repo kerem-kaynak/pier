@@ -479,7 +479,11 @@ const bootstrapTmpl = `#!/usr/bin/env bash
 set -euo pipefail
 
 # Stock AMI: harness install still running under cloud-init; wait it out.
-command -v git >/dev/null && command -v tmux >/dev/null || sudo cloud-init status --wait >/dev/null || true
+# Guard on binaries the stock image LACKS: Ubuntu ships git and tmux, so
+# guarding on those skipped the wait everywhere (the same trap the
+# user-data idempotency guards document) and .pier-setup.sh raced the
+# node/docker/claude installs it depends on.
+command -v docker >/dev/null && command -v node >/dev/null && command -v claude >/dev/null || sudo cloud-init status --wait >/dev/null || true
 
 sudo install -m 0755 /tmp/pier-supervisor /usr/local/bin/pier-supervisor
 sudo tee /etc/systemd/system/pier-supervisor.service >/dev/null <<'UNIT'
