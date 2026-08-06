@@ -179,7 +179,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status, m.statusBad = msg.err.Error(), true
 			return m, nil
 		}
-		m.status, m.statusBad = "creating "+msg.branch+" in the background — it appears below shortly (log: "+ui.Tilde(msg.log)+")", false
+		// Terse on purpose: the ◐ row appearing below already says "watch
+		// here", and every extra word pushes the log path off the right edge
+		// of a ~100-column terminal.
+		m.status, m.statusBad = "creating "+msg.branch+" in the background (log: "+ui.Tilde(msg.log)+")", false
 		m.watch = 12 // ~60s of polling even before the instance shows up
 		if !m.polling {
 			m.polling = true
