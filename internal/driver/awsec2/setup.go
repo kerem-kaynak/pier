@@ -261,7 +261,7 @@ func (d *Driver) vpcID(ctx context.Context) (string, error) {
 		return "", err
 	}
 	if out == "" || out == "None" {
-		return "", fmt.Errorf("no default VPC in %s — set aws.subnet in %s", d.Region, "config")
+		return "", fmt.Errorf("no default VPC in %s — pier needs a subnet: rerun `pier setup` to be prompted for one, or set aws.subnet in ~/.config/pier/config.toml", d.Region)
 	}
 	return out, nil
 }

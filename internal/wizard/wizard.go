@@ -6,14 +6,18 @@ package wizard
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 
 	"github.com/kerem-kaynak/pier/internal/config"
 	"github.com/kerem-kaynak/pier/internal/driver"
@@ -37,11 +41,17 @@ aws ec2 create-security-group --group-name pier-egress-only \
   --tag-specifications 'ResourceType=security-group,Tags=[{Key=pier:managed,Value=1}]'
 
 # Devs then need permissions for: ec2 run/start/stop/terminate/describe*,
+# ec2 create-tags (create's last act marks the session ready via tag —
+# without it every create fails and self-terminates),
 # ssm start-session + get-parameter, sts get-caller-identity,
-# iam:PassRole on pier-session, and for direct connect (the default)
+# iam:PassRole on pier-session (plus iam get-role + get-instance-profile,
+# read by pier doctor), and for direct connect (the default)
 # ec2 describe-security-group-rules + authorize/revoke-security-group-ingress
 # (pier keeps one TCP-22 rule per caller, scoped to their current public
 # IP /32; aws.direct = false forces the SSM tunnel and needs none of it).
+# pier resize adds ec2 modify-instance-attribute. pier bake adds
+# ec2 create-image + deregister-image + delete-snapshot. The vCPU headroom
+# display reads servicequotas get-service-quota (optional, degrades politely).
 `
 
 func Run(newDriver func(config.Config) (driver.Driver, error), printAdminOnly bool) error {
@@ -126,6 +136,19 @@ func Run(newDriver func(config.Config) (driver.Driver, error), printAdminOnly bo
 	fmt.Println("\n " + ui.Accent.Render("creating groundwork") +
 		ui.Dim.Render("  IAM role + instance profile + egress-only security group"))
 	rep, err := drv.SetupOnce(ctx)
+	if err != nil && strings.Contains(err.Error(), "no default VPC") {
+		// Enterprise accounts routinely delete the default VPC. Without this
+		// prompt setup would abort before writing config, and the only other
+		// place to set aws.subnet is a config file that does not exist yet.
+		fmt.Println("  "+ui.Mark(false), err.Error())
+		if subnet := ask(in, "subnet for sessions (subnet-...)", ""); subnet != "" {
+			cfg.AWS.Subnet = subnet
+			if drv, err = newDriver(cfg); err != nil {
+				return err
+			}
+			rep, err = drv.SetupOnce(ctx)
+		}
+	}
 	if err != nil {
 		// Only blame IAM rights when it actually is a permissions error.
 		if low := strings.ToLower(err.Error()); strings.Contains(low, "accessdenied") || strings.Contains(low, "not authorized") {
@@ -161,11 +184,25 @@ func Run(newDriver func(config.Config) (driver.Driver, error), printAdminOnly bo
 	if repo := gitToplevel(); repo == "" {
 		fmt.Println(ui.Dim.Render("  (images bake per repo: cd <repo> && pier bake — ~5 min once, cuts creates to ~60-90s)"))
 	} else if name := filepath.Base(repo); yes(in, "bake the session image for "+name+" now? (~5 min once; cuts creates to ~60-90s)", true) {
-		ami, err := drv.Bake(ctx, driver.BakeSpec{RepoName: name, HookPath: driver.BakeHook(repo)})
+		// ctrl-c mid-bake must cancel the ctx so Bake's deferred cleanup can
+		// terminate the temporary instance — it has no supervisor, so a
+		// leaked one never parks itself.
+		bctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+		ami, err := drv.Bake(bctx, driver.BakeSpec{
+			RepoName: name, HookPath: driver.BakeHook(repo),
+			Replaces: []string{cfg.AWS.BakedAMIs[name], cfg.AWS.BakedAMI},
+		})
+		stop()
 		if err != nil {
 			return err
 		}
-		cfg.AWS.BakedAMIs = map[string]string{name: ami}
+		// Merge like `pier bake` does: replacing the whole map would strand
+		// other repos' images as unreferenced (but still billing) AMIs.
+		if cfg.AWS.BakedAMIs == nil {
+			cfg.AWS.BakedAMIs = map[string]string{}
+		}
+		cfg.AWS.BakedAMIs[name] = ami
+		cfg.AWS.BakedAMI = ""
 		if err := cfg.Save(); err != nil {
 			return err
 		}
@@ -195,10 +232,22 @@ func gitToplevel() string {
 
 func checkIdentity(in *bufio.Reader, profile string) (string, error) {
 	sts := func() (string, error) {
-		out, err := exec.Command("aws", "sts", "get-caller-identity",
-			"--query", "Arn", "--output", "text", "--profile", profile).CombinedOutput()
+		// Stdin and stderr stay attached: mfa_serial profiles prompt for a
+		// code here, and answering it once caches the session token for every
+		// buffered call after this one. Stderr is teed into a buffer so the
+		// SSO detection below can still read the failure text.
+		var errb bytes.Buffer
+		cmd := exec.Command("aws", "sts", "get-caller-identity",
+			"--query", "Arn", "--output", "text", "--profile", profile)
+		cmd.Stdin = os.Stdin
+		cmd.Stderr = io.MultiWriter(os.Stderr, &errb)
+		out, err := cmd.Output()
 		if err != nil {
-			return "", fmt.Errorf("%s", strings.TrimSpace(string(out)))
+			msg := strings.TrimSpace(errb.String())
+			if msg == "" {
+				msg = err.Error()
+			}
+			return "", fmt.Errorf("%s", msg)
 		}
 		return strings.TrimSpace(string(out)), nil
 	}
