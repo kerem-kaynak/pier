@@ -1,17 +1,19 @@
-# pier demo — render with: vhs docs/demo.tape   (https://github.com/charmbracelet/vhs)
+# pier demo — render with: cd /tmp/pier-demo/shop && vhs ~/pier/docs/demo.tape
+# The gif lands at ./demo.gif in the staged repo — copy it to pier's docs/.
+# Run from the staged repo: the TUI create picks the repo up from the cwd.
 #
 # vhs drives a real terminal, so this records against real sessions.
-# Stage before recording (throwaway repo, e.g. /tmp/pier-demo/shop):
+# Stage before recording: a throwaway repo (e.g. /tmp/pier-demo/shop) whose
+# .pier-setup.sh starts a dev server on :3000, then
 #   pier checkout-flow -d --no-park
 #   pier search-index  -d --no-park
-#   pier payments-retry -d --idle 2m     # parked by recording time
-# payments-retry must be PARKED when recording starts, and must sit on the
-# third TUI row (check `pier ls` order; adjust the Down presses if not).
-# The claude beat assumes claude is authenticated in sessions (secrets
-# manifest or claude_oauth_token in the pier config).
-# All real waiting happens inside Hide/Show.
+# Both must be past creating when recording starts. The TUI sorts by name,
+# so rows are: checkout-flow, payments-retry (created live), search-index.
+# The default instance type should be t4g.medium so the resize beat grows
+# to t4g.xlarge two picker rows down. All real waiting hides inside
+# Hide/Show — never guess AWS round-trips with fixed visible sleeps.
 
-Output docs/demo.gif
+Output demo.gif
 
 Set FontSize 15
 Set Width 1100
@@ -21,77 +23,84 @@ Set TypingSpeed 70ms
 Set Framerate 24
 
 # --- open the TUI: the hero shot -------------------------------------------
-# The session fetch rides real AWS round-trips (2-15s). Key presses before
-# the list loads are swallowed and Enter lands on row 1 — never guess the
-# fetch time with a fixed sleep; wait for the parked row to render.
 Type "pier"
 Enter
-Sleep 1s
+Sleep 800ms
 Hide
-Wait+Screen@60s /parked/
+Wait+Screen@60s /checkout-flow\s+shop/
 Show
-Sleep 3s
+Sleep 1.5s
 
-# --- pick the parked session ------------------------------------------------
-Down
+# --- create a session from the TUI ------------------------------------------
+Type "n"
+Sleep 600ms
+Type "payments-retry"
 Sleep 400ms
-Down
-Sleep 700ms
 Enter
-
-# the TUI hands off to attach; catch the dim "resuming (~20-30s)" line...
-Sleep 1.2s
-# ...then skip the actual resume, however long it takes: the shell prompt
-# only ever renders once tmux is attached
+# the status line + creating row register, then the real create (minutes on
+# a stock image) hides until the row flips ready (● replaces the ◐)
+Sleep 2.5s
 Hide
-Wait+Screen@180s /agent@payments-retry/
+Wait+Screen@900s /payments-retry\s+shop\s+●/
 Show
-
-# inside: tmux at agent@payments-retry:~/work/shop, repo on its branch
-Sleep 1s
-Type "git status"
-Enter
 Sleep 2s
 
-# --- talk to the agent -------------------------------------------------------
-# The prompt names a file on purpose: Read/Grep are auto-allowed, so the
-# answer needs no permission dialog. Open-ended prompts make claude reach for
-# Bash (git show, ls) and the take stalls on an approval prompt.
-Type "claude"
-Enter
-Sleep 3s
-Type@40ms "read src/routes.js: how do retries handle timeouts? answer in one sentence"
-Sleep 500ms
-Enter
-# let the thinking spinner register, then skip the real wait (~25s measured;
-# done when the spinner verb flips to past tense: "Cooked for 11s")
-Sleep 1.5s
+# --- pier proxy: every session as a hostname --------------------------------
+Type "q"
+Sleep 300ms
 Hide
-Wait+Screen@90s /ed for \d+s/
-Show
-# the answer, on screen long enough to read
-Sleep 4.5s
-
-# --- detach; the session parks itself --------------------------------------
-# claude stays open on purpose: an idle REPL is ~0% CPU, so the supervisor
-# still counts the session idle and parks it — that's the story.
-Ctrl+B
-Type "d"
-Sleep 1s
-
-# skip the 2m idle window plus the EC2 stop itself, then the payoff:
-# parked at disk-only cost (clear first — the dead TUI scrollback is noise)
-Hide
-Sleep 240s
 Type "clear"
 Enter
 Show
-Type "pier ls"
+Type "pier proxy"
 Enter
-Sleep 300ms
-# ls latency rides real AWS round-trips (2-8s): hide the wait and reveal the
-# payoff the moment the parked row prints
+Sleep 1.2s
+# tunnels come up and the dev servers get discovered; all three mirror :3000
 Hide
-Wait+Screen@30s /parked/
+Wait+Screen@120s /checkout-flow\.pier ports: 3000/
+Wait+Screen@120s /payments-retry\.pier ports: 3000/
+Wait+Screen@120s /search-index\.pier ports: 3000/
 Show
-Sleep 4.5s
+Sleep 3s
+Ctrl+C
+Sleep 1.2s
+
+# --- back to the TUI for resize ---------------------------------------------
+Hide
+Type "clear"
+Enter
+Type "pier"
+Enter
+Wait+Screen@60s /search-index\s+shop\s+●/
+Show
+Sleep 1.5s
+
+# cursor sits on checkout-flow (row 1): grow it from t4g.medium to t4g.xlarge
+Type "m"
+Sleep 1.5s
+Down
+Sleep 500ms
+Down
+Sleep 800ms
+Enter
+# the resize status line lands, then the real park+resume cycle (~40-60s)
+# hides; the TUI stays open so the resize it drives runs to completion
+Sleep 2.5s
+Hide
+Sleep 180s
+Show
+Sleep 1s
+
+# --- delete a session --------------------------------------------------------
+Down
+Sleep 400ms
+Down
+Sleep 600ms
+Type "d"
+Sleep 1.5s
+Type "y"
+Sleep 1.2s
+Hide
+Sleep 25s
+Show
+Sleep 2.5s
