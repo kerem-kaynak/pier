@@ -796,7 +796,12 @@ func cmdBake() {
 	// This bake supersedes the repo's previous image and, once per config,
 	// the legacy shared one.
 	replaces := []string{cfg.AWS.BakedAMIs[name], cfg.AWS.BakedAMI}
-	ami, err := drv.Bake(context.Background(), driver.BakeSpec{
+	// ctrl-c mid-bake must cancel the ctx (not just kill the process) so
+	// Bake's deferred cleanup can terminate the temporary instance — it has
+	// no supervisor, so a leaked one never parks itself.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	ami, err := drv.Bake(ctx, driver.BakeSpec{
 		RepoName: name, HookPath: hook, Replaces: replaces,
 	})
 	if err != nil {
