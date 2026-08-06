@@ -24,8 +24,9 @@ func TestParsePSIAvg60(t *testing.T) {
 }
 
 func TestParseSS(t *testing.T) {
-	// Captured shape of `ss -Htnap` on Ubuntu 24.04: the resolver stub and
-	// sshd's own listener are plumbing; node/docker-proxy are the session's.
+	// Captured shape of `ss -Htnap` on Ubuntu 24.04: the resolver stub,
+	// sshd's own listener, and containerd's localhost gRPC port are
+	// plumbing; node/docker-proxy are the session's.
 	// The two ESTAB sshd rows are one :22 transport (not a tunnel) and one
 	// loopback dial serving a forwarded port (a tunnel); the node row is the
 	// app's side of that same dial (not sshd's, so not counted twice).
@@ -34,6 +35,7 @@ LISTEN 0      128          0.0.0.0:22             0.0.0.0:*     users:(("sshd",p
 LISTEN 0      511                *:3000                 *:*     users:(("node",pid=1234,fd=18))
 LISTEN 0      511             [::]:3000              [::]:*     users:(("node",pid=1234,fd=19))
 LISTEN 0      4096         0.0.0.0:5432           0.0.0.0:*     users:(("docker-proxy",pid=990,fd=4))
+LISTEN 0      4096       127.0.0.1:41223         0.0.0.0:*     users:(("containerd",pid=2253,fd=12))
 ESTAB  0      0          127.0.0.1:22         127.0.0.1:54321   users:(("sshd",pid=740,fd=4))
 ESTAB  0      0          127.0.0.1:47110      127.0.0.1:3000    users:(("sshd",pid=812,fd=11))
 ESTAB  0      0          127.0.0.1:3000       127.0.0.1:47110   users:(("node",pid=1234,fd=21))

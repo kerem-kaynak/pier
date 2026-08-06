@@ -237,7 +237,9 @@ func netSnapshot() ([]int, int) {
 }
 
 // parseSS reads `ss -Htnap` output. Listening ports exclude the plumbing
-// (sshd, systemd-resolved) and dedupe v4/v6. A "tunnel" is an established
+// (sshd, systemd-resolved, containerd's localhost gRPC port — docker-proxy
+// stays, published container ports are exactly what to mirror) and dedupe
+// v4/v6. A "tunnel" is an established
 // connection owned by sshd that isn't the :22 transport itself — exactly the
 // loopback dials sshd makes to serve a forwarded port, and never app→app
 // traffic (a dev server holding a pooled DB connection must not block
@@ -252,7 +254,8 @@ func parseSS(out string) (listening []int, tunnels int) {
 		local, peer, proc := f[3], f[4], strings.Join(f[5:], " ")
 		switch f[0] {
 		case "LISTEN":
-			if strings.Contains(proc, `"sshd"`) || strings.Contains(proc, `"systemd-resolve`) {
+			if strings.Contains(proc, `"sshd"`) || strings.Contains(proc, `"systemd-resolve`) ||
+				strings.Contains(proc, `"containerd`) {
 				continue
 			}
 			if p := addrPort(local); p > 0 && p != 22 && !seen[p] {

@@ -161,6 +161,10 @@ func TestRenderBootstrapModes(t *testing.T) {
 		// shell variables must survive rendering escaped — they belong to the
 		// tmux window's bash, not to the bootstrap shell.
 		`echo running > ~/.pier-setup.status`,
+		// Runs on presence via bash: a committed 0644 .pier-setup.sh (git
+		// only carries +x when the author set it) must not skip silently.
+		`if [ -f "$setup" ]; then`,
+		`bash $setup 2>&1`,
 		`c=\${PIPESTATUS[0]}`,
 		`pier setup: FAILED (exit \$c)`,
 		// The failure rename must target its own pane: a bare rename-window
