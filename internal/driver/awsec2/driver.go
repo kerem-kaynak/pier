@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -169,6 +170,11 @@ func (d *Driver) List(ctx context.Context) ([]driver.Session, error) {
 		s.CostNote = costNote(s.State)
 		sessions = append(sessions, s)
 	}
+	// describe-instances returns reservations in no particular order, so
+	// without this the TUI cursor and ls output shuffle between refreshes.
+	slices.SortFunc(sessions, func(a, b driver.Session) int {
+		return strings.Compare(a.Name, b.Name)
+	})
 	return sessions, nil
 }
 
