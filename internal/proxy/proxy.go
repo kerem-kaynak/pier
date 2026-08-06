@@ -149,7 +149,11 @@ func Run(ctx context.Context, drv driver.Driver, opt Options) error {
 				}
 			}
 			if first {
-				fmt.Fprintf(opt.Out, ui.Dim.Render("watching %d running session(s)\n"), len(live))
+				// The newline stays outside the styled string: lipgloss pads
+				// every line of a multi-line block to equal width, so a \n
+				// inside Render emits a line of trailing spaces that glues
+				// itself to whatever prints next.
+				fmt.Fprintln(opt.Out, ui.Dim.Render(fmt.Sprintf("watching %d running session(s)", len(live))))
 				first = false
 			}
 			for id, w := range workers {
