@@ -5,6 +5,7 @@
 package ui
 
 import (
+	"os"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -41,6 +42,20 @@ func Mark(ok bool) string {
 		return OK.Render("✓")
 	}
 	return Bad.Render("✗")
+}
+
+// Tilde shortens a path under the user's home to ~/... — for display only,
+// never for opening. Absolute paths overflow status lines and put the local
+// username in every screenshot someone shares.
+func Tilde(p string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return p
+	}
+	if rest, ok := strings.CutPrefix(p, home+string(os.PathSeparator)); ok {
+		return "~" + string(os.PathSeparator) + rest
+	}
+	return p
 }
 
 // Keys renders a footer hint from key/description pairs:
