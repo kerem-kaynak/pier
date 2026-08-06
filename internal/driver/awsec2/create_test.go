@@ -185,8 +185,21 @@ func TestRenderBootstrapModes(t *testing.T) {
 	}
 
 	full := renderBootstrap(spec, "full", "abc123", "")
-	if !strings.Contains(full, "git fetch -q /tmp/pier.bundle refs/pier/export") {
-		t.Error("full-mode bootstrap must fetch the bundle")
+	// The ref carries the session name: concurrent creates in one repo must
+	// not race on a shared refs/pier/export.
+	if !strings.Contains(full, "git fetch -q /tmp/pier.bundle refs/pier/export-x") {
+		t.Error("full-mode bootstrap must fetch the bundle by this create's export ref")
+	}
+}
+
+func TestExportRef(t *testing.T) {
+	if got := exportRef("fix-auth"); got != "refs/pier/export-fix-auth" {
+		t.Errorf("exportRef(fix-auth) = %q", got)
+	}
+	// Slashes flatten so a name like "feat/.hidden" can't smuggle a
+	// dot-leading ref component past git.
+	if got := exportRef("feat/.hidden"); got != "refs/pier/export-feat-.hidden" {
+		t.Errorf("exportRef(feat/.hidden) = %q", got)
 	}
 }
 

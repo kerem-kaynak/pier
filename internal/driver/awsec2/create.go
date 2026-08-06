@@ -117,8 +117,12 @@ func (d *Driver) Create(ctx context.Context, spec driver.CreateSpec) (sess *driv
 	bundle := ""
 	if mode != "origin" {
 		bundle = filepath.Join(work, "pier.bundle")
-		switch err := gitBundle(spec.Repo, sha, bundle, mode == "thin"); {
-		case errors.Is(err, errEmptyBundle): // stale --contains; origin has it all
+		switch err := gitBundle(spec.Repo, sha, bundle, exportRef(spec.Name), mode == "thin"); {
+		// Only thin bundles are legitimately empty (stale --contains; origin
+		// has it all). A full bundle of real history can't be — treating that
+		// as "fetch from origin" once shipped a session pointed at an origin
+		// that didn't exist.
+		case errors.Is(err, errEmptyBundle) && mode == "thin":
 			mode, bundle = "origin", ""
 		case err != nil:
 			return nil, fmt.Errorf("bundling %s: %w", spec.Repo, err)
@@ -519,8 +523,8 @@ if [ '{{MODE}}' != full ] && [ -n "${GH_TOKEN:-}" ] && ! command -v gh >/dev/nul
 { command -v gh >/dev/null && [ -n "${GH_TOKEN:-}" ] && gh auth setup-git >/dev/null 2>&1; } || true
 case '{{MODE}}' in
   origin) git fetch -q --no-tags origin {{SHA}} ;;
-  thin)   git fetch -q --no-tags origin && git fetch -q /tmp/pier.bundle refs/pier/export ;;
-  *)      git fetch -q /tmp/pier.bundle refs/pier/export ;;
+  thin)   git fetch -q --no-tags origin && git fetch -q /tmp/pier.bundle {{EXPORTREF}} ;;
+  *)      git fetch -q /tmp/pier.bundle {{EXPORTREF}} ;;
 esac
 git reset -q --hard {{SHA}}
 # Uncommitted edits to tracked files, exactly as the laptop had them (a
@@ -594,6 +598,7 @@ func renderBootstrap(spec driver.CreateSpec, mode, sha, origin string) string {
 		"{{MODE}}", mode,
 		"{{SHA}}", sha,
 		"{{ORIGIN}}", origin,
+		"{{EXPORTREF}}", exportRef(spec.Name),
 	).Replace(bootstrapTmpl)
 }
 
@@ -713,16 +718,26 @@ func fetchURL(raw string) string {
 
 var errEmptyBundle = fmt.Errorf("empty bundle")
 
+// exportRef names the temporary ref a create's bundle travels under. Derived
+// from the session name so concurrent creates in the same repo (two quick
+// TUI spawns) don't race on one shared ref — the first create's deferred
+// delete used to yank it out from under the second's `git bundle create`.
+// Slashes flatten so no ref component can start with a dot the name
+// validation only blocks at position zero.
+func exportRef(name string) string {
+	return "refs/pier/export-" + strings.ReplaceAll(name, "/", "-")
+}
+
 // gitBundle packs history reachable from sha into a bundle exposing a single
-// ref (refs/pier/export) that the VM fetches — includes uncommitted nothing,
-// clean by construction. thin subtracts everything origin already has,
-// leaving prerequisites the VM satisfies by fetching origin first.
-func gitBundle(repo, sha, dst string, thin bool) error {
-	if _, err := gitOut(repo, "update-ref", "refs/pier/export", sha); err != nil {
+// ref (the create's exportRef) that the VM fetches — includes uncommitted
+// nothing, clean by construction. thin subtracts everything origin already
+// has, leaving prerequisites the VM satisfies by fetching origin first.
+func gitBundle(repo, sha, dst, ref string, thin bool) error {
+	if _, err := gitOut(repo, "update-ref", ref, sha); err != nil {
 		return err
 	}
-	defer gitOut(repo, "update-ref", "-d", "refs/pier/export")
-	args := []string{"-C", repo, "bundle", "create", dst, "refs/pier/export"}
+	defer gitOut(repo, "update-ref", "-d", ref)
+	args := []string{"-C", repo, "bundle", "create", dst, ref}
 	if thin {
 		args = append(args, "--not", "--remotes=origin")
 	}
