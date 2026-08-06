@@ -231,6 +231,11 @@ type worker struct {
 
 func (w *worker) run() {
 	defer close(w.done)
+	// Every exit must kill the master, not just the shutdown path: after an
+	// early return (tunnel timeout, hostname taken) the reconcile loop sweeps
+	// this worker and respawns one every 15s, and each leaked master would
+	// stack another ssh + SSM tunnel for as long as the condition persists.
+	defer w.cancel()
 	defer func() { // relays die with the worker; the ssh forwards die with the master
 		for _, ln := range w.relays {
 			ln.Close()
