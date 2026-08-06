@@ -29,6 +29,9 @@ func (d *Driver) Create(ctx context.Context, spec driver.CreateSpec) (sess *driv
 	if progress == nil {
 		progress = func(string) {}
 	}
+	if err := validateNames(spec); err != nil {
+		return nil, err
+	}
 	me, err := d.user(ctx)
 	if err != nil {
 		return nil, err
@@ -419,6 +422,57 @@ func sanitize(name string) string {
 }
 
 // --- bootstrap ----------------------------------------------------------------
+
+// validateNames gates what create splices into the VM bootstrap (a bash
+// script) and into tag values, hostnames, and key file names. A conservative
+// charset beats quoting three shell layers deep: a legal-but-hostile git
+// branch like "a'; rm -rf ~" must never reach the template, and it fails
+// here, before anything launches and bills.
+func validateNames(spec driver.CreateSpec) error {
+	if err := checkName(spec.Branch); err != nil {
+		return fmt.Errorf("branch %q: %w", spec.Branch, err)
+	}
+	if spec.Name != spec.Branch {
+		if err := checkName(spec.Name); err != nil {
+			return fmt.Errorf("session name %q: %w", spec.Name, err)
+		}
+	}
+	base := filepath.Base(spec.Repo)
+	for _, r := range base {
+		if r <= 0x20 || r == 0x7f || strings.ContainsRune("'\"$\\`", r) {
+			return fmt.Errorf("repo directory %q contains %q, which breaks the VM setup script it is spliced into — rename the directory first", base, r)
+		}
+	}
+	return nil
+}
+
+// checkName allows the git-branch shapes people actually use. Everything else
+// is rejected: the name also becomes a proxy hostname, an EC2 tag, a tmux
+// target, and a log file name, so exotic characters fail somewhere far worse
+// than here.
+func checkName(s string) error {
+	if s == "" || len(s) > 100 {
+		return fmt.Errorf("must be 1-100 characters")
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9',
+			r == '.', r == '_', r == '-', r == '/':
+		default:
+			return fmt.Errorf("only letters, digits and . _ - / are allowed")
+		}
+	}
+	if s[0] == '-' || s[0] == '.' || s[0] == '/' {
+		return fmt.Errorf("cannot start with %q", s[0])
+	}
+	if strings.HasSuffix(s, "/") || strings.HasSuffix(s, ".") || strings.HasSuffix(s, ".lock") {
+		return fmt.Errorf("cannot end with / . or .lock")
+	}
+	if strings.Contains(s, "..") || strings.Contains(s, "//") {
+		return fmt.Errorf("cannot contain .. or //")
+	}
+	return nil
+}
 
 const bootstrapTmpl = `#!/usr/bin/env bash
 # pier bootstrap — runs once, as agent, on the fresh instance.

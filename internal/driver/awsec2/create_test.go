@@ -27,6 +27,44 @@ func TestSanitize(t *testing.T) {
 	}
 }
 
+// Names are spliced into the VM bootstrap script, so validation is the only
+// thing standing between a hostile branch name and shell on the instance.
+func TestValidateNames(t *testing.T) {
+	ok := func(branch string) driver.CreateSpec {
+		return driver.CreateSpec{Name: branch, Branch: branch, Repo: "/tmp/myrepo"}
+	}
+	for _, branch := range []string{"fix-auth", "feature/login-v2", "v1.2.3", "UPPER_case.mix"} {
+		if err := validateNames(ok(branch)); err != nil {
+			t.Errorf("branch %q rejected: %v", branch, err)
+		}
+	}
+	for _, branch := range []string{
+		"", "a'b", `a"b`, "a b", "a\tb", "a$b", "a`b", `a\b`, // shell metacharacters
+		"-flag", ".hidden", "/abs", // hostile leading char
+		"a..b", "a//b", "a/", "a.", "a.lock", // git-invalid shapes
+		strings.Repeat("x", 101),
+	} {
+		if err := validateNames(ok(branch)); err == nil {
+			t.Errorf("branch %q accepted", branch)
+		}
+	}
+	// The session name is validated on its own when it differs from the branch.
+	bad := driver.CreateSpec{Name: "a b", Branch: "main", Repo: "/tmp/myrepo"}
+	if err := validateNames(bad); err == nil {
+		t.Error("session name \"a b\" accepted")
+	}
+	// The repo directory becomes a path in the setup script: metacharacters
+	// and whitespace are out, but ordinary punctuation-free unicode is fine.
+	for _, repo := range []string{"/tmp/My Project", "/tmp/shop's", "/tmp/a$b", "/tmp/a`b"} {
+		if err := validateNames(driver.CreateSpec{Name: "x", Branch: "x", Repo: repo}); err == nil {
+			t.Errorf("repo %q accepted", repo)
+		}
+	}
+	if err := validateNames(driver.CreateSpec{Name: "x", Branch: "x", Repo: "/tmp/übung-2026"}); err != nil {
+		t.Errorf("repo /tmp/übung-2026 rejected: %v", err)
+	}
+}
+
 func TestDurConf(t *testing.T) {
 	if got := durConf(0); got != "never" {
 		t.Errorf("durConf(0) = %q, want never", got)
