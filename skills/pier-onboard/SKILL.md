@@ -85,8 +85,11 @@ pnpm db:migrate
 ```
 
 Everything must be non-interactive — no prompts, no `sudo` that asks, no
-watch-mode/foreground processes (background services with
-`docker compose up -d` or similar).
+watch-mode/foreground processes. Run services with `docker compose up -d`
+where possible. A bare background process must fully detach —
+`setsid cmd </dev/null >log 2>&1 &` — because the setup tmux window closes
+when the script ends and SIGHUPs its process group (`nohup` alone does not
+detach it).
 
 ## Step 4 — write `.pier-include` (only if loose files are needed)
 
@@ -106,9 +109,8 @@ the laptop for the VM.
 
 ## Step 5 — finish
 
-- `chmod +x .pier-setup.sh .pier-bake.sh` — pier only runs the setup
-  script if it's executable.
 - These files are meant to be committed (they name paths, not secrets).
+  pier runs both scripts with bash, so the exec bit is optional.
 - Tell the user: if you wrote or changed `.pier-bake.sh`, run `pier bake`
   in the repo (~8 min, once per hook change). Then create a session and
   watch `pier ls` — `(setup running)` should clear; if it shows

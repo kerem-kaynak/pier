@@ -207,6 +207,10 @@ docker compose up -d
 pnpm db:migrate
 ```
 
+Prefer `docker compose up -d` for services. A bare background process must
+fully detach with `setsid cmd </dev/null >log 2>&1 &` or it dies when the
+setup window closes.
+
 ```
 # .pier-include: one path or glob per line (no **), a directory carries its subtree
 .env
