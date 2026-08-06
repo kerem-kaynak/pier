@@ -120,6 +120,24 @@ any setting later from inside the TUI. Run `pier` and press `s`.
 No IAM permissions? `pier setup --print-admin` prints the handful of
 commands for an admin to run once. The wizard then works with what exists.
 
+### AWS permissions
+
+Two permission levels exist. Setup needs IAM rights once, to create the
+role, the instance profile, and the security group. Daily use needs only:
+
+- `ec2`: run, start, stop, terminate, describe, and create-tags
+- `ssm`: start-session and get-parameter
+- `sts`: get-caller-identity
+- `iam`: PassRole on `pier-session` (plus get-role and get-instance-profile
+  for `pier doctor`)
+- `ec2` security group ingress calls for direct connect (skipped when
+  `aws.direct = false`)
+
+`pier resize` adds `ec2:ModifyInstanceAttribute`. `pier bake` adds
+`ec2:CreateImage`, `ec2:DeregisterImage` and `ec2:DeleteSnapshot`. The vCPU
+headroom display reads `servicequotas:GetServiceQuota` and degrades politely
+without it. The same list ships as comments in `pier setup --print-admin`.
+
 ## Usage
 
 ```
@@ -156,7 +174,7 @@ session checkout-flow ready
 
 # ... in a second terminal: the session's ports, one hostname away ...
 $ pier proxy
-proxy up — running sessions resolve as <session>.pier (http + https), ports mirror on localhost too
+proxy up — running sessions resolve as <session>.pier (http + https), ports mirror on localhost too; ctrl-c to stop
 # the agent's dev server, live in your browser: http://localhost:3000
 # or, when two sessions hold the same port: http://checkout-flow.pier:3000
 
@@ -164,7 +182,7 @@ proxy up — running sessions resolve as <session>.pier (http + https), ports mi
 
 $ pier ls
 NAME           REPO  STATE   AGE  COST
-checkout-flow  shop  parked  3h   ~$3-4/mo (disk only)
+checkout-flow  shop  parked  3h   ~$3-4/mo
 
 $ pier attach checkout-flow
 resuming checkout-flow (~20-30s)...
@@ -263,7 +281,7 @@ Headless Chromium ships in the default image, so browser MCPs and skills
 
 ```
 $ pier proxy
-proxy up — running sessions resolve as <session>.pier (http + https), ports mirror on localhost too
+proxy up — running sessions resolve as <session>.pier (http + https), ports mirror on localhost too; ctrl-c to stop
 ```
 
 - Open `http://checkout-flow.pier:3000` in a browser, or `psql -h checkout-flow.pier`.

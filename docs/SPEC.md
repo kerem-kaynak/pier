@@ -1,7 +1,8 @@
 # pier — v1 design spec
 
-Status: settled design, pre-implementation (2026-07-30). This document is the
-source of truth; TODOs in code point here.
+Status: implemented and shipping (v0.2.x). The design below was settled
+2026-07-30 and stands as the record of the trade-offs. Where code and spec
+disagree, the code won.
 
 ## 1. Product
 
