@@ -48,9 +48,9 @@ the container services for this product:
 | state    | meaning                                  | cost            |
 |----------|------------------------------------------|-----------------|
 | creating | provisioning / first boot                | running rate    |
-| running  | reachable, a client attached             | ~$0.03/h        |
-| working  | reachable, detached, agent busy          | ~$0.03/h        |
-| idle     | reachable, quiet; park countdown running | ~$0.03/h        |
+| running  | reachable, a client attached             | ~$0.04/h        |
+| working  | reachable, detached, agent busy          | ~$0.04/h        |
+| idle     | reachable, quiet; park countdown running | ~$0.04/h        |
 | parked   | instance stopped, disk only              | ~$3–4/mo (40GB) |
 | dead     | terminated outside pier                  | $0              |
 

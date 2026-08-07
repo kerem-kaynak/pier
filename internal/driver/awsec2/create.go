@@ -228,7 +228,8 @@ func (d *Driver) Create(ctx context.Context, spec driver.CreateSpec) (sess *driv
 	return &driver.Session{
 		ID: id, Name: spec.Name, Repo: filepath.Base(spec.Repo), Branch: spec.Branch,
 		User: me, Driver: d.Name(), State: driver.StateRunning, Created: time.Now(),
-		CostNote: costNote(driver.StateRunning),
+		InstanceType: d.InstanceType,
+		CostNote:     costNote(driver.StateRunning, d.InstanceType),
 	}, nil
 }
 

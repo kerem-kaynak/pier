@@ -167,7 +167,7 @@ func (d *Driver) List(ctx context.Context) ([]driver.Session, error) {
 				s.Created = ts
 			}
 		}
-		s.CostNote = costNote(s.State)
+		s.CostNote = costNote(s.State, s.InstanceType)
 		sessions = append(sessions, s)
 	}
 	// describe-instances returns reservations in no particular order, so
@@ -178,15 +178,22 @@ func (d *Driver) List(ctx context.Context) ([]driver.Session, error) {
 	return sessions, nil
 }
 
-func costNote(st driver.State) string {
+// costNote reads the hourly rate from the same catalog the resize picker
+// shows, so the list and the picker can never quote different prices for
+// one machine. Types outside the catalog show nothing — blank beats wrong.
+func costNote(st driver.State, itype string) string {
 	switch st {
 	case driver.StateParked:
 		return "~$3-4/mo"
 	case driver.StateDead:
 		return ""
-	default:
-		return "~$0.03/h"
 	}
+	for _, m := range Machines(itype) {
+		if m.Type == itype {
+			return m.Cost
+		}
+	}
+	return ""
 }
 
 func (d *Driver) Resume(ctx context.Context, id string) error {

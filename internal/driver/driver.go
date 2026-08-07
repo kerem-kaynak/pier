@@ -41,7 +41,7 @@ type Session struct {
 	Setup        string    // repo setup script: "" | "running" | "failed" (supervisor beacon)
 	InstanceType string    // provider machine type; feeds the TUI resize picker
 	Created      time.Time // session creation, not last boot — AGE must never go backward
-	CostNote     string    // honest money: "$3/mo parked", "$0.03/h running"
+	CostNote     string    // honest money: "~$3-4/mo" parked, the type's hourly rate otherwise
 }
 
 // Machine is one row in the TUI's resize picker: a curated instance type

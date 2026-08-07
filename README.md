@@ -59,7 +59,7 @@ type in one 40-second cycle, disk intact. And to see what the agent built,
 
 | Session state | Costs |
 |---|---|
-| running | `~$0.03/h` |
+| running | `~$0.04/h` |
 | parked | `~$3-4/mo` (disk only) |
 
 There is no control plane. No server, no database, no daemon on your laptop.
@@ -336,7 +336,7 @@ resize` fixes it without losing anything:
 ```
 $ pier ls
 NAME           REPO  STATE               AGE  COST
-checkout-flow  shop  working (strained)  2h   ~$0.03/h
+checkout-flow  shop  working (strained)  2h   ~$0.04/h
 
 $ pier resize checkout-flow t4g.xlarge
 ```
