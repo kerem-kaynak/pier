@@ -386,7 +386,20 @@ runcmd:
     docker info 2>/dev/null | grep -q userns || systemctl restart docker
     command -v node >/dev/null || { curl -fsSL --retry 3 https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs; }
     command -v gh >/dev/null || { curl -fsSL --retry 3 https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /usr/share/keyrings/githubcli-archive-keyring.gpg && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list && apt-get update -y && apt-get install -y gh; }
-    command -v claude >/dev/null || npm install -g @anthropic-ai/claude-code
+    # claude self-updates, so it must live user-side: under a root-owned npm
+    # prefix the updater can only fail, painting a red "Auto-update failed"
+    # across every launch. This also keeps sessions from baked AMIs current —
+    # they update themselves instead of pinning the bake-time version. The
+    # /usr/local/bin symlink keeps claude on PATH for non-login shells (ssh
+    # exec channels, like pier mcp login rides).
+    if ! command -v claude >/dev/null; then
+      sudo -Hu agent bash -c 'curl -fsSL --retry 3 https://claude.ai/install.sh | bash'
+      ln -sf /home/agent/.local/bin/claude /usr/local/bin/claude
+    elif [ -e /usr/lib/node_modules/@anthropic-ai/claude-code ]; then
+      # AMIs baked before this fix carry claude under root's npm prefix:
+      # silence the doomed self-updater there until a re-bake.
+      grep -q DISABLE_AUTOUPDATER /etc/environment || echo 'DISABLE_AUTOUPDATER=1' >> /etc/environment
+    fi
     command -v codex >/dev/null || npm install -g @openai/codex
     # Headless chromium for browser MCPs/skills (playwright cache + shared libs).
     [ -e /home/agent/.cache/ms-playwright ] || { npx -y playwright install-deps chromium && sudo -Hu agent npx -y playwright install chromium; }
@@ -538,10 +551,12 @@ mkdir -p "$HOME/.codex"
 grep -q 'work/{{REPO}}' "$HOME/.codex/config.toml" 2>/dev/null || printf '\n[projects."/home/agent/work/{{REPO}}"]\ntrust_level = "trusted"\n' >> "$HOME/.codex/config.toml"
 
 # Terminal scrollback can't reach into tmux, so without mouse mode a session
-# reads as "can't scroll up". Seed only when no ~/.tmux.conf rode the
-# manifest; must land before the server starts below.
+# reads as "can't scroll up". focus-events feeds terminal focus to the
+# programs inside (claude nags about it on every launch otherwise). Seed only
+# when no ~/.tmux.conf rode the manifest; must land before the server starts
+# below.
 if [ ! -f "$HOME/.tmux.conf" ]; then
-  printf 'set -g mouse on\nset -g history-limit 50000\n' > "$HOME/.tmux.conf"
+  printf 'set -g mouse on\nset -g history-limit 50000\nset -g focus-events on\n' > "$HOME/.tmux.conf"
 fi
 
 # SSH_AUTH_SOCK points at the attach-refreshed symlink (dangling until the
