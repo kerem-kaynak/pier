@@ -20,6 +20,8 @@ jobs:
       - name: build
         run: make build VERSION=${{ github.ref_name }}
       - name: publish GitHub release
-        run: gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes
+        # a release cut by hand (gh release create) pushes the tag itself and
+        # this workflow races it, so tolerate an existing release
+        run: gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes
         env:
           GH_TOKEN: ${{ github.token }}
