@@ -18,6 +18,33 @@ pier proxy          # sessions as hostnames: the dev server at fix-login.pier:30
 pier                # the TUI: list, attach, create, resize, destroy
 ```
 
+## Contents
+
+- [Why pier](#why-pier)
+- [The solution](#the-solution)
+- [Installation](#installation)
+- [Setup](#setup)
+  - [AWS permissions](#aws-permissions)
+- [Usage](#usage)
+- [Making your repo pier-ready](#making-your-repo-pier-ready)
+- [The pier-onboard skill](#the-pier-onboard-skill)
+- [Features](#features)
+  - [Fast repo transfer, GitHub-first](#fast-repo-transfer-github-first)
+  - [Secrets, deliberately boring](#secrets-deliberately-boring)
+  - [MCP servers, agents, skills](#mcp-servers-agents-skills)
+  - [`pier proxy`: sessions as hostnames](#pier-proxy-sessions-as-hostnames)
+  - [`pier bake`: per-repo images](#pier-bake-per-repo-images)
+  - [Setup that can't fail silently](#setup-that-cant-fail-silently)
+  - [Strain and resize](#strain-and-resize)
+  - [Honest states](#honest-states)
+- [Caveats](#caveats)
+- [How it works](#how-it-works)
+- [Design decisions](#design-decisions)
+- [vs. other tools](#vs-other-tools)
+- [Roadmap](#roadmap)
+- [Contributing](#contributing)
+- [License](#license)
+
 ## Why pier
 
 Coding agents changed what a dev environment is. A session is no longer you
