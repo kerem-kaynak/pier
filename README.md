@@ -1,4 +1,4 @@
-[![wt](https://img.shields.io/badge/wt-repo-007aff)](https://github.com/kerem-kaynak/wt) *[wt](https://github.com/kerem-kaynak/wt) preps git worktrees for parallel agent sessions on your machine.*
+*for local alternative - [wt](https://github.com/kerem-kaynak/wt) preps git worktrees for parallel agent sessions on your machine.*
 
 # ⚓ pier
 
