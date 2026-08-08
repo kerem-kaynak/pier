@@ -1,9 +1,8 @@
+[![wt](https://img.shields.io/badge/wt-repo-007aff)](https://github.com/kerem-kaynak/wt) *[wt](https://github.com/kerem-kaynak/wt) preps git worktrees for parallel agent sessions on your machine.*
+
 # ⚓ pier
 
 [![CI](https://github.com/kerem-kaynak/pier/actions/workflows/ci.yml/badge.svg)](https://github.com/kerem-kaynak/pier/actions/workflows/ci.yml)
-[![wt](https://img.shields.io/badge/wt-repo-007aff)](https://github.com/kerem-kaynak/wt)
-
-*[wt](https://github.com/kerem-kaynak/wt) preps git worktrees for parallel agent sessions on your machine.*
 
 **Give every agent session its own VM. One command up, zero burn when idle.**
 
